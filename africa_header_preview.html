@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Africa Header Preview</title>
+  <style>
+    body {
+      margin: 0;
+      background: #1a1a1a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: sans-serif;
+    }
+    .card {
+      width: 400px;
+      background: #111;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    }
+    .map-wrap {
+      width: 400px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 0 16px;
+      background: #111;
+    }
+    .map-wrap img,
+    .map-wrap object {
+      width: 280px;
+      height: auto;
+    }
+    .label {
+      text-align: center;
+      color: #888;
+      font-size: 11px;
+      padding: 0 0 20px;
+      letter-spacing: 0.08em;
+    }
+    .legend {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      padding: 0 0 20px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #aaa;
+    }
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="map-wrap">
+      <img src="africa_header.svg" alt="Africa map with Sudan highlighted"/>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="swatch" style="background:#C0392B"></div> Sudan</div>
+      <div class="legend-item"><div class="swatch" style="background:#b5b5b5"></div> South Sudan</div>
+      <div class="legend-item"><div class="swatch" style="background:#9a9a9a"></div> Other</div>
+    </div>
+    <div class="label">africa_header.svg · 56×72 viewBox · Natural Earth 50m</div>
+  </div>
+</body>
+</html>

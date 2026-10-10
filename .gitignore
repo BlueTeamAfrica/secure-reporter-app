@@ -3,8 +3,10 @@
 # dependencies
 node_modules/
 
-# Expo
-.expo/
+# Expo (keep typed routes manifest for CI / `tsc`)
+.expo/*
+!.expo/types/
+!.expo/types/router.d.ts
 dist/
 web-build/
 expo-env.d.ts
@@ -35,6 +37,9 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Firebase Functions build output
+functions/lib/
 
 app-example
 
