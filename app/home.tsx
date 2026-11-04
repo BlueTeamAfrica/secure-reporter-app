@@ -10,6 +10,7 @@ import {
   syncPendingItems,
 } from "../src/state/drafts";
 import { WorkingReport, getWorkingReport } from "../src/state/editorDraft";
+import { displaySubmissionError } from "../src/lib/attachments/sendErrorMessages";
 import { colors } from "../src/theme/colors";
 import { poppins } from "../src/theme/fonts";
 
@@ -198,7 +199,7 @@ function OutboxCard({
               ...poppins("400"),
             }}
           >
-            {report.lastSubmissionError}
+            {displaySubmissionError(report.lastSubmissionError, report.attachments)}
           </Text>
         ) : null}
 

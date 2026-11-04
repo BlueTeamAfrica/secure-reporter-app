@@ -9,10 +9,15 @@ import {
   missingLocalAttachmentError,
   normalizeLocalFileUri,
 } from "./readLocalFileForUpload";
+import { SEND_ERROR_MESSAGES } from "./sendErrorMessages";
 import type { SubmittedAttachment } from "./types";
 
 /**
- * Direct upload to Supabase Storage (private bucket).
+ * Direct upload to Supabase Storage (private bucket), in two separate steps:
+ * 1. readLocalAttachmentBytes: reads the file from the app sandbox. Only errors from this step
+ *    can mean "the file is missing on this device".
+ * 2. uploadAttachmentBytes: sends the bytes. Its errors are never treated as a missing local
+ *    file, whatever their text says.
  */
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -22,16 +27,31 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-export async function uploadLocalFileToStorage(input: {
+/**
+ * Object paths contain the sanitized file name (`<attachmentId>_<name>`), so remove them from
+ * any service message before it is logged or stored.
+ */
+function redactObjectPaths(message: string, storagePaths: string[]): string {
+  let out = message;
+  for (const path of storagePaths) {
+    const objectName = path.split("/").pop() ?? "";
+    for (const s of [path, objectName]) {
+      if (s) out = out.split(s).join("[object]");
+    }
+  }
+  return out;
+}
+
+export type LocalAttachmentBytes = {
+  bytes: Uint8Array;
+  mimeType: string;
+};
+
+/** Step 1: read the local file. Throws a missing-file error only when the file is not there. */
+export async function readLocalAttachmentBytes(input: {
   localUri: string;
   mimeType: string;
-  storagePath: string;
-  fileName?: string;
-  /** Alias for display name when building relay JSON `fileName`. */
-  name?: string;
-  attachmentId: string;
-  originalName: string;
-}): Promise<SubmittedAttachment> {
+}): Promise<LocalAttachmentBytes> {
   if (Platform.OS === "web") {
     throw new Error(
       "Supabase Storage upload is only supported on iOS and Android in this build."
@@ -58,9 +78,21 @@ export async function uploadLocalFileToStorage(input: {
     throw e;
   }
 
-  const mimeType = input.mimeType || "application/octet-stream";
+  return {
+    bytes: base64ToUint8Array(base64),
+    mimeType: input.mimeType || "application/octet-stream",
+  };
+}
 
-  const bytes = base64ToUint8Array(base64);
+/** Step 2: upload bytes already read from the device. */
+export async function uploadAttachmentBytes(input: {
+  bytes: Uint8Array;
+  mimeType: string;
+  storagePath: string;
+  attachmentId: string;
+  originalName: string;
+}): Promise<SubmittedAttachment> {
+  const { bytes, mimeType } = input;
   const { bucket } = getSupabaseEnv();
   const supabase = getSupabaseClient();
 
@@ -79,11 +111,12 @@ export async function uploadLocalFileToStorage(input: {
   });
 
   if (error) {
+    const reason = redactObjectPaths(error.message ?? "unknown error", [input.storagePath]);
     console.error("[SEND:supabase] upload failed", {
       attachmentId: input.attachmentId,
-      message: error.message,
+      message: reason,
     });
-    throw new Error(`Supabase Storage upload failed: ${error.message}`);
+    throw new Error(SEND_ERROR_MESSAGES.uploadFailed.replace("{reason}", () => reason));
   }
 
   console.log("[SEND:supabase] upload success", { attachmentId: input.attachmentId, size: bytes.length });
@@ -110,7 +143,9 @@ export async function deleteStoragePaths(paths: string[]) {
   console.log("[SEND:supabase:rollback] remove", { count: paths.length, bucket });
   const { error } = await supabase.storage.from(bucket).remove(paths);
   if (error) {
-    console.warn("[SEND:supabase:rollback] remove failed (best-effort)", { message: error.message });
+    console.warn("[SEND:supabase:rollback] remove failed (best-effort)", {
+      message: redactObjectPaths(error.message ?? "unknown error", paths),
+    });
   } else {
     console.log("[SEND:supabase:rollback] remove ok");
   }

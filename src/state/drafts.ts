@@ -5,7 +5,13 @@ import { uploadEncryptedSubmission } from "../lib/submissions";
 import { getReporterMetadataForSubmission } from "./reporterProfile";
 import type { DraftAttachment, SubmittedAttachment } from "../lib/attachments/types";
 import { deleteAllImportedAttachments, deleteAttachmentsFiles } from "../lib/attachments/persistLocal";
-import { deleteStoragePaths, uploadLocalFileToStorage } from "../lib/attachments/storageUpload";
+import {
+  deleteStoragePaths,
+  readLocalAttachmentBytes,
+  uploadAttachmentBytes,
+  type LocalAttachmentBytes,
+} from "../lib/attachments/storageUpload";
+import { attachmentReadFailedCode, missingAttachmentCode } from "../lib/attachments/sendErrorMessages";
 import { storageObjectName } from "../lib/attachments/fileNames";
 import { formatSubmissionPipelineError } from "../lib/attachments/submissionErrors";
 import { isMissingLocalAttachmentError } from "../lib/attachments/readLocalFileForUpload";
@@ -73,31 +79,6 @@ function getSubmissionPayloadSecret(): string {
     throw new Error("Missing EXPO_PUBLIC_SUBMISSION_PAYLOAD_SECRET");
   }
   return secret;
-}
-
-/**
- * User-facing text when a queued attachment's file is gone. Single source so it can be
- * translated later; `{fileName}` is replaced with the attachment's display name.
- */
-export const MISSING_ATTACHMENT_SEND_MESSAGE =
-  "Attachment no longer on this device: {fileName}. Remove it or attach it again, then send.";
-
-type LogSafeError = Error & { logSafeMessage: string };
-
-function missingAttachmentSendError(fileName: string): LogSafeError {
-  const err = new Error(
-    MISSING_ATTACHMENT_SEND_MESSAGE.replace("{fileName}", () => fileName)
-  ) as LogSafeError;
-  err.logSafeMessage = "attachment missing on device";
-  return err;
-}
-
-function getLogSafeMessage(err: unknown): string | null {
-  if (err && typeof err === "object" && "logSafeMessage" in err) {
-    const v = (err as { logSafeMessage?: unknown }).logSafeMessage;
-    if (typeof v === "string") return v;
-  }
-  return null;
 }
 
 function attachmentsToCipher(attachments: DraftAttachment[], pin: string) {
@@ -660,29 +641,34 @@ export async function syncQueuedItem(clientSubmissionId: string) {
       const expectedStoragePath = `submissions/${attemptId}/attachments/${objectName}`;
       console.log("[SYNC] attachment upload: start", { clientSubmissionId, attachmentId: att.id });
 
+      // Step 1: read the local file. Only errors from this step can mean "missing on this
+      // device". Raw read errors are not passed on: their text can contain the local path,
+      // which ends in the file name. What is stored and logged is a code with the id only.
+      let local: LocalAttachmentBytes;
       try {
-        const uploaded = await uploadLocalFileToStorage({
-          localUri: att.localUri,
-          mimeType: att.mimeType,
-          storagePath: expectedStoragePath,
-          fileName: att.name,
-          attachmentId: att.id,
-          originalName: att.name,
-        });
-        uploadedStoragePaths.push(uploaded.storagePath);
-        submittedAttachments.push(uploaded);
-        console.log("[SYNC] attachment upload: success", { clientSubmissionId, attachmentId: att.id });
+        local = await readLocalAttachmentBytes({ localUri: att.localUri, mimeType: att.mimeType });
       } catch (e: unknown) {
-        if (isMissingLocalAttachmentError(e)) {
-          // Log only the opaque id: file names can describe sensitive content.
-          console.warn("[ATTACHMENT] local file missing; send stopped", {
-            clientSubmissionId,
-            attachmentId: att.id,
-          });
-          throw missingAttachmentSendError(att.name);
-        }
-        throw e;
+        const missing = isMissingLocalAttachmentError(e);
+        console.warn(
+          missing
+            ? "[ATTACHMENT] local file missing; send stopped"
+            : "[ATTACHMENT] local file could not be read; send stopped",
+          { clientSubmissionId, attachmentId: att.id }
+        );
+        throw new Error(missing ? missingAttachmentCode(att.id) : attachmentReadFailedCode(att.id));
       }
+
+      // Step 2: upload. Errors propagate unchanged and are never classified as a missing file.
+      const uploaded = await uploadAttachmentBytes({
+        bytes: local.bytes,
+        mimeType: local.mimeType,
+        storagePath: expectedStoragePath,
+        attachmentId: att.id,
+        originalName: att.name,
+      });
+      uploadedStoragePaths.push(uploaded.storagePath);
+      submittedAttachments.push(uploaded);
+      console.log("[SYNC] attachment upload: success", { clientSubmissionId, attachmentId: att.id });
     }
 
     pipelineStep = "firestore";
@@ -748,9 +734,9 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     return { status: "purged" as const, serverSubmissionId, clientSubmissionId };
   } catch (error) {
     const message = formatSubmissionPipelineError(error);
-    // The missing-attachment message contains the file name; keep it out of logs.
-    const logMessage = getLogSafeMessage(error) ?? message;
-    console.error("[SYNC] failed", { clientSubmissionId, stage: pipelineStep, message: logMessage });
+    // Safe to log and store: attachment errors are codes with ids only, local URIs are
+    // redacted, and upload messages have object paths removed.
+    console.error("[SYNC] failed", { clientSubmissionId, stage: pipelineStep, message });
 
     if (uploadedStoragePaths.length) {
       console.log("[SYNC] rollback: deleting partial uploads", {

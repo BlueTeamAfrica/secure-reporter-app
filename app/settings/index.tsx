@@ -36,9 +36,17 @@ export default function SettingsScreen() {
         >
           <Text style={{ color: colors.accent, fontSize: 16, ...poppins("600") }}>← Back</Text>
         </Pressable>
-        <Text style={{ color: colors.text, fontSize: 28, marginBottom: 8, ...poppins("700") }}>
-          Settings
-        </Text>
+        {/* Hidden: 3 s hold on the title opens the read-only Storage check (test-phase). */}
+        <Pressable
+          onLongPress={() => router.push("/settings/storage-check")}
+          delayLongPress={3000}
+          android_disableSound
+          style={{ alignSelf: "flex-start" }}
+        >
+          <Text style={{ color: colors.text, fontSize: 28, marginBottom: 8, ...poppins("700") }}>
+            Settings
+          </Text>
+        </Pressable>
         <Text
           style={{
             color: colors.textMuted,
