@@ -159,6 +159,11 @@ export async function getWorkingReport(): Promise<WorkingReport | null> {
   }
 }
 
+/** True when a working-draft record exists in storage, whether or not it can be decrypted. */
+export async function hasStoredWorkingReport(): Promise<boolean> {
+  return (await AsyncStorage.getItem(WORKING_REPORT_KEY)) !== null;
+}
+
 export async function clearWorkingReport() {
   await AsyncStorage.removeItem(WORKING_REPORT_KEY);
 }

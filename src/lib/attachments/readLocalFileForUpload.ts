@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 
-/** Thrown when the sandbox path no longer exists (purge/OS cleanup); submission text should still proceed. */
+/** Thrown when the sandbox path no longer exists (purge/OS cleanup); the send is stopped, not partial. */
 export const ATTACHMENT_LOCAL_FILE_MISSING_CODE = "attachment/local_file_missing";
 
 export function normalizeLocalFileUri(uri: string): string {
@@ -16,7 +16,7 @@ export function missingLocalAttachmentError(): Error & { code: string } {
   return err;
 }
 
-/** True when the attachment URI pointed at nothing readable (skip upload; do not fail the report). */
+/** True when the attachment URI pointed at nothing readable (the send fails and names the file). */
 export function isMissingLocalAttachmentError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = "code" in err ? (err as { code?: unknown }).code : undefined;

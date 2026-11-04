@@ -75,6 +75,31 @@ function getSubmissionPayloadSecret(): string {
   return secret;
 }
 
+/**
+ * User-facing text when a queued attachment's file is gone. Single source so it can be
+ * translated later; `{fileName}` is replaced with the attachment's display name.
+ */
+export const MISSING_ATTACHMENT_SEND_MESSAGE =
+  "Attachment no longer on this device: {fileName}. Remove it or attach it again, then send.";
+
+type LogSafeError = Error & { logSafeMessage: string };
+
+function missingAttachmentSendError(fileName: string): LogSafeError {
+  const err = new Error(
+    MISSING_ATTACHMENT_SEND_MESSAGE.replace("{fileName}", () => fileName)
+  ) as LogSafeError;
+  err.logSafeMessage = "attachment missing on device";
+  return err;
+}
+
+function getLogSafeMessage(err: unknown): string | null {
+  if (err && typeof err === "object" && "logSafeMessage" in err) {
+    const v = (err as { logSafeMessage?: unknown }).logSafeMessage;
+    if (typeof v === "string") return v;
+  }
+  return null;
+}
+
 function attachmentsToCipher(attachments: DraftAttachment[], pin: string) {
   if (!attachments.length) return undefined;
   return encryptDraftText(JSON.stringify(attachments), pin);
@@ -165,6 +190,23 @@ async function persistLastSubmissionError(id: string, message: string | null) {
       : r
   );
   await saveStoredReports(next);
+}
+
+/**
+ * Number of stored, non-purged report records, counted without decrypting.
+ * Throws if the stored list can't be parsed, so corruption is never mistaken for "no reports".
+ * Attachment cleanup compares this with getReports().length to detect dropped records.
+ */
+export async function countStoredActionableReports(): Promise<number> {
+  const raw = await AsyncStorage.getItem(REPORTS_KEY);
+  if (!raw) return 0;
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Stored reports are not a list");
+  }
+  const tombstones = await getPurgeTombstones();
+  const tombstonedIds = new Set(tombstones.map((t) => t.clientSubmissionId));
+  return parsed.filter((r) => !tombstonedIds.has((r as StoredReportRecord | null)?.id ?? "")).length;
 }
 
 export async function clearAllDrafts() {
@@ -597,6 +639,14 @@ export async function syncQueuedItem(clientSubmissionId: string) {
   await updateSubmissionStatus(clientSubmissionId, "syncing");
 
   try {
+    // Checked before any upload so a missing profile never uploads and then rolls back.
+    const reporter = await getReporterMetadataForSubmission();
+    if (!reporter) {
+      throw new Error(
+        "Workspace profile incomplete: add your name in Settings → Workspace profile before syncing."
+      );
+    }
+
     console.log("[SYNC] attachments: start", {
       clientSubmissionId,
       count: report.attachments.length,
@@ -624,8 +674,12 @@ export async function syncQueuedItem(clientSubmissionId: string) {
         console.log("[SYNC] attachment upload: success", { clientSubmissionId, attachmentId: att.id });
       } catch (e: unknown) {
         if (isMissingLocalAttachmentError(e)) {
-          console.log("[ATTACHMENT] skipped missing local file", { attachmentId: att.id });
-          continue;
+          // Log only the opaque id: file names can describe sensitive content.
+          console.warn("[ATTACHMENT] local file missing; send stopped", {
+            clientSubmissionId,
+            attachmentId: att.id,
+          });
+          throw missingAttachmentSendError(att.name);
         }
         throw e;
       }
@@ -650,13 +704,6 @@ export async function syncQueuedItem(clientSubmissionId: string) {
       updatedAt: report.updatedAt,
       attachments: submittedAttachments,
     };
-
-    const reporter = await getReporterMetadataForSubmission();
-    if (!reporter) {
-      throw new Error(
-        "Workspace profile incomplete: add your name in Settings → Workspace profile before syncing."
-      );
-    }
 
     const serverReceipt = await uploadEncryptedSubmission(payload, submissionSecret, reporter);
     if (!serverReceipt?.ok) throw new Error("Ambiguous server receipt");
@@ -701,7 +748,9 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     return { status: "purged" as const, serverSubmissionId, clientSubmissionId };
   } catch (error) {
     const message = formatSubmissionPipelineError(error);
-    console.error("[SYNC] failed", { clientSubmissionId, stage: pipelineStep, message });
+    // The missing-attachment message contains the file name; keep it out of logs.
+    const logMessage = getLogSafeMessage(error) ?? message;
+    console.error("[SYNC] failed", { clientSubmissionId, stage: pipelineStep, message: logMessage });
 
     if (uploadedStoragePaths.length) {
       console.log("[SYNC] rollback: deleting partial uploads", {

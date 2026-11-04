@@ -1,8 +1,9 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { DraftAttachment } from "./types";
 import { sanitizeFileName } from "./fileNames";
-import { getWorkingReport } from "../../state/editorDraft";
-import { getReports } from "../../state/drafts";
+import { getWorkingReport, hasStoredWorkingReport } from "../../state/editorDraft";
+import { countStoredActionableReports, getReports } from "../../state/drafts";
+import { getSessionPin } from "../../state/session";
 
 function attachmentsRootDir() {
   const base = FileSystem.documentDirectory;
@@ -58,8 +59,14 @@ export async function deleteAllImportedAttachments() {
  * local item (saved/pending/needs sync) nor the in-progress working buffer.
  *
  * Never deletes queued items or drafts; only deletes unattached bytes.
+ *
+ * Fails closed: a file is deleted only when every stored item was read successfully and
+ * none of them references it. Without a real unlocked session (locked, unlock screen,
+ * cover session) references can't be read, so nothing is deleted.
  */
 export async function cleanupOrphanImportedAttachments() {
+  if (!getSessionPin()) return;
+
   const base = FileSystem.documentDirectory;
   if (!base) return;
   const dir = `${base}secure_reporter_attachments/`;
@@ -71,6 +78,12 @@ export async function cleanupOrphanImportedAttachments() {
 
   try {
     const reports = await getReports();
+    // getReports() silently drops records it can't decrypt. If any were dropped, their
+    // files would look orphaned, so skip cleanup entirely.
+    if ((await countStoredActionableReports()) !== reports.length) {
+      console.warn("[ATTACHMENT] cleanup skipped: some stored items could not be read");
+      return;
+    }
     for (const r of reports) {
       for (const att of r.attachments ?? []) {
         if (typeof att.localUri === "string" && att.localUri.startsWith("file:")) {
@@ -78,19 +91,20 @@ export async function cleanupOrphanImportedAttachments() {
         }
       }
     }
-  } catch {
-    // ignore (e.g. locked/decoy mode)
-  }
 
-  try {
     const working = await getWorkingReport();
+    if (!working && (await hasStoredWorkingReport())) {
+      console.warn("[ATTACHMENT] cleanup skipped: working draft could not be read");
+      return;
+    }
     for (const att of working?.attachments ?? []) {
       if (typeof att.localUri === "string" && att.localUri.startsWith("file:")) {
         referenced.add(att.localUri);
       }
     }
   } catch {
-    // ignore
+    console.warn("[ATTACHMENT] cleanup skipped: could not load references");
+    return;
   }
 
   await Promise.all(
