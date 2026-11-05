@@ -5,14 +5,25 @@
  * diagnosed remotely without clearing data. Shows no titles, bodies, file names, PINs or hashes.
  * Makes no writes and deletes nothing.
  *
- * Reachable only by a 3 s hold on the Settings title. The root layout redirects locked sessions
- * to /unlock and cover sessions to /cover; this screen also refuses to load without a real
- * session PIN.
+ * Reachable by a 3 s hold on the Settings title and, in test builds only, by the visible
+ * "Diagnostics" row in Settings. The root layout redirects locked sessions to /unlock and cover
+ * sessions to /cover; this screen also refuses to load counts without a real session PIN.
+ *
+ * Test builds also get a speed test: it times scrypt with a random dummy PIN and salt, and
+ * touches no storage, no vault, no device secret and no session.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { router } from "expo-router";
+import { getRandomBytes } from "expo-crypto";
 import Screen from "../../src/components/layout/Screen";
+import { IS_TEST_BUILD } from "../../src/lib/env/testBuild";
+import {
+  BENCHMARK_LOG_N,
+  describeJsEngine,
+  runKdfBenchmark,
+  type BenchmarkResult,
+} from "../../src/lib/vault/kdfBenchmark";
 import { getSessionPin } from "../../src/state/session";
 import { getStorageDiagnostics, type StorageDiagnostics } from "../../src/state/storageDiagnostics";
 import { colors } from "../../src/theme/colors";
@@ -52,6 +63,13 @@ const STRINGS = {
   filesReferenced: "Referenced by readable items",
   filesUnreferenced: "Not referenced",
   filesMissing: "Referenced but missing",
+  sectionSpeed: "Speed test",
+  speedIntro: "Times one key derivation per level with dummy input. Nothing is read or changed.",
+  speedEngine: "JS engine",
+  speedRun: "Speed test",
+  speedRunning: "Running…",
+  speedPending: "—",
+  speedFailed: "Speed test could not be completed.",
 } as const;
 
 type LoadState =
@@ -84,6 +102,73 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       <Text style={{ color: colors.text, fontSize: 16, marginBottom: 6, ...poppins("600") }}>{title}</Text>
       {children}
     </View>
+  );
+}
+
+function SpeedTest() {
+  const [results, setResults] = useState<BenchmarkResult[]>([]);
+  const [running, setRunning] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const cancelled = useRef(false);
+  const engine = useRef(describeJsEngine()).current;
+
+  useEffect(() => {
+    cancelled.current = false;
+    return () => {
+      cancelled.current = true; // stop after the current level if the screen goes away
+    };
+  }, []);
+
+  const run = useCallback(async () => {
+    setRunning(true);
+    setFailed(false);
+    setResults([]);
+    try {
+      await runKdfBenchmark({
+        randomBytes: getRandomBytes,
+        isCancelled: () => cancelled.current,
+        onResult: (r) => {
+          if (!cancelled.current) setResults((prev) => [...prev, r]);
+        },
+      });
+    } catch {
+      if (!cancelled.current) setFailed(true); // no error text shown or logged
+    } finally {
+      if (!cancelled.current) setRunning(false);
+    }
+  }, []);
+
+  return (
+    <Section title={STRINGS.sectionSpeed}>
+      <Text style={{ color: colors.textMuted, fontSize: 13, marginBottom: 6, ...poppins("400") }}>
+        {STRINGS.speedIntro}
+      </Text>
+      <Row label={STRINGS.speedEngine} value={engine} />
+      {BENCHMARK_LOG_N.map((logN) => {
+        const r = results.find((x) => x.logN === logN);
+        const label = `N=2^${logN}, r=8, p=1 (${(128 * 8 * 2 ** logN) / 2 ** 20} MiB)`;
+        const value = r ? `${r.seconds.toFixed(2)} s` : running ? STRINGS.speedRunning : STRINGS.speedPending;
+        return <Row key={logN} label={label} value={value} />;
+      })}
+      {failed ? (
+        <Text style={{ color: colors.error, marginTop: 6, ...poppins("500") }}>{STRINGS.speedFailed}</Text>
+      ) : null}
+      <Pressable
+        onPress={() => void run()}
+        disabled={running}
+        style={{
+          backgroundColor: colors.accent,
+          opacity: running ? 0.5 : 1,
+          paddingVertical: 12,
+          borderRadius: 12,
+          marginTop: 10,
+        }}
+      >
+        <Text style={{ color: colors.onAccent, textAlign: "center", fontSize: 15, ...poppins("600") }}>
+          {running ? STRINGS.speedRunning : STRINGS.speedRun}
+        </Text>
+      </Pressable>
+    </Section>
   );
 }
 
@@ -201,6 +286,12 @@ export default function StorageCheckScreen() {
               </Text>
             </Pressable>
           </>
+        ) : null}
+
+        {IS_TEST_BUILD ? (
+          <View style={{ marginTop: 18 }}>
+            <SpeedTest />
+          </View>
         ) : null}
       </ScrollView>
     </Screen>

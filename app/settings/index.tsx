@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useEffect, useState } from "react";
 import Screen from "../../src/components/layout/Screen";
+import { IS_TEST_BUILD } from "../../src/lib/env/testBuild";
 import { getRandomizeKeypadEnabled, setRandomizeKeypad } from "../../src/state/device";
 import { colors } from "../../src/theme/colors";
 import { poppins } from "../../src/theme/fonts";
@@ -36,7 +37,8 @@ export default function SettingsScreen() {
         >
           <Text style={{ color: colors.accent, fontSize: 16, ...poppins("600") }}>← Back</Text>
         </Pressable>
-        {/* Hidden: 3 s hold on the title opens the read-only Storage check (test-phase). */}
+        {/* Hidden: 3 s hold on the title opens the read-only Storage check (test-phase).
+            Kept alongside the visible test-build "Diagnostics" row below, for now. */}
         <Pressable
           onLongPress={() => router.push("/settings/storage-check")}
           delayLongPress={3000}
@@ -113,6 +115,27 @@ export default function SettingsScreen() {
             }}
           />
         </View>
+
+        {IS_TEST_BUILD ? (
+          <Pressable
+            onPress={() => router.push("/settings/storage-check")}
+            style={{
+              backgroundColor: colors.surface,
+              padding: 18,
+              borderRadius: 14,
+              marginBottom: 12,
+              borderWidth: 1,
+              borderColor: colors.border,
+            }}
+          >
+            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
+              Diagnostics
+            </Text>
+            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
+              Storage counts and speed test. Test builds only.
+            </Text>
+          </Pressable>
+        ) : null}
 
         <Pressable
           onLongPress={() => router.push("/settings/backup-code")}

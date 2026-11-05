@@ -2,6 +2,9 @@
   "build": {
     "preview": {
       "environment": "production",
+      "env": {
+        "EXPO_PUBLIC_TEST_BUILD": "1"
+      },
       "android": {
         "buildType": "apk"
       }

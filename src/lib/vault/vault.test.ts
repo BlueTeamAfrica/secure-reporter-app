@@ -69,6 +69,9 @@ type Setup = {
   /** Live references to the same buffers, to check that lock() zeroes them. */
   random32Live: Uint8Array[];
   scryptSalts: string[];
+  /** Copies of every scrypt output (PIN-equivalent material), for the leak search. */
+  scryptOutputs: Uint8Array[];
+  unwrapAttempts: SlotId[];
 };
 
 function setup(opts: { slotBit?: number; kdf?: KdfParams } = {}): Setup {
@@ -76,6 +79,8 @@ function setup(opts: { slotBit?: number; kdf?: KdfParams } = {}): Setup {
   const random32: Uint8Array[] = [];
   const random32Live: Uint8Array[] = [];
   const scryptSalts: string[] = [];
+  const scryptOutputs: Uint8Array[] = [];
+  const unwrapAttempts: SlotId[] = [];
   const randomBytes = (n: number) => {
     const out = new Uint8Array(nodeRandomBytes(n));
     if (n === 1 && opts.slotBit !== undefined) out[0] = opts.slotBit;
@@ -87,10 +92,19 @@ function setup(opts: { slotBit?: number; kdf?: KdfParams } = {}): Setup {
   };
   const scrypt: ScryptFn = (pw, salt, o) => {
     scryptSalts.push(Buffer.from(salt).toString("hex"));
-    return scryptAsync(pw, salt, o);
+    return scryptAsync(pw, salt, o).then((out) => {
+      scryptOutputs.push(out.slice());
+      return out;
+    });
   };
-  const vault = makeVault({ storage, randomBytes, scrypt, kdfParams: opts.kdf ?? FAST_KDF });
-  return { storage, vault, random32, random32Live, scryptSalts };
+  const vault = makeVault({
+    storage,
+    randomBytes,
+    scrypt,
+    kdfParams: opts.kdf ?? FAST_KDF,
+    onUnwrapAttempt: (slot) => unwrapAttempts.push(slot),
+  });
+  return { storage, vault, random32, random32Live, scryptSalts, scryptOutputs, unwrapAttempts };
 }
 
 async function created(opts: { slotBit?: number } = {}) {
@@ -206,7 +220,11 @@ describe("vault", () => {
     assert.deepEqual(recordsAfter, recordsBefore, "records must not be rewritten");
     const headerAfter = storage.blobs.get(headerStorageKey(slot))!;
     const salt = (h: string) => Buffer.from(h, "base64").subarray(5, 21).toString("hex");
-    assert.notEqual(salt(headerAfter), salt(headerBefore), "new salt expected");
+    const wrap = (h: string) => Buffer.from(h, "base64").subarray(21).toString("hex");
+    // Shared install-wide salt: unchanged, and still equal to the other slot's. Fresh nonce + wrap.
+    assert.equal(salt(headerAfter), salt(headerBefore), "shared salt is kept");
+    assert.equal(salt(headerAfter), salt(storage.blobs.get(headerStorageKey(slot === "a" ? "b" : "a"))!));
+    assert.notEqual(wrap(headerAfter), wrap(headerBefore), "fresh nonce and wrap");
 
     vault.lock();
     assert.equal(await vault.unlock(REAL_PIN), null);
@@ -300,13 +318,20 @@ describe("vault", () => {
     assert.equal(await vault.unlock(REAL_PIN), null);
     assert.equal(await vault.unlock(COVER_PIN), null);
 
-    // Tampered header KDF params (bound in AAD and in the derivation): no unlock.
+    // Tampered KDF params in ONE header: shared prefixes differ, rejected before any derivation.
+    const tamperR = (slot: SlotId) => {
+      const h = Buffer.from(original.get(headerStorageKey(slot))!, "base64");
+      h[3] = 7; // r = 7
+      storage.blobs.set(headerStorageKey(slot), h.toString("base64"));
+    };
     storage.blobs.set(headerStorageKey("a"), original.get(headerStorageKey("a"))!);
     storage.blobs.set(headerStorageKey("b"), original.get(headerStorageKey("b"))!);
-    const h = Buffer.from(original.get(headerStorageKey(realSlot))!, "base64");
-    h[3] = 7; // r = 7
-    storage.blobs.set(headerStorageKey(realSlot), h.toString("base64"));
+    tamperR(realSlot);
+    await rejectsWith(vault.unlock(REAL_PIN), "CORRUPT");
+    // Tampered identically in BOTH headers (bound in AAD and in the derivation): no unlock.
+    tamperR(coverSlot);
     assert.equal(await vault.unlock(REAL_PIN), null);
+    assert.equal(await vault.unlock(COVER_PIN), null);
   });
 
   it("Arabic-Indic, Eastern Arabic-Indic and ASCII digits are equivalent", async () => {
@@ -356,15 +381,54 @@ describe("vault", () => {
     assert.equal((await vault.get<number[]>("reports"))!.length, 50);
   });
 
-  it("unlock always attempts both slots, for real, cover and wrong PINs", async () => {
+  it("unlock runs ONE scrypt and always attempts both slots, for real, cover and wrong PINs", async () => {
     const s = await created();
     const saltOf = (slot: SlotId) =>
       Buffer.from(s.storage.blobs.get(headerStorageKey(slot))!, "base64").subarray(5, 21).toString("hex");
     for (const pin of [REAL_PIN, COVER_PIN, "000000"]) {
       s.scryptSalts.length = 0;
+      s.unwrapAttempts.length = 0;
       await s.vault.unlock(pin);
-      assert.deepEqual(s.scryptSalts, [saltOf("a"), saltOf("b")], `both derivations for each unlock`);
+      assert.deepEqual(s.scryptSalts, [saltOf("a")], "exactly one derivation per unlock");
+      assert.deepEqual(s.unwrapAttempts, ["a", "b"], "both slots attempted on every unlock");
     }
+  });
+
+  it("both headers share one salt and KDF prefix; a mismatch is rejected", async () => {
+    for (const slotBit of [0, 1]) {
+      const s = await created({ slotBit });
+      const prefix = (slot: SlotId) =>
+        Buffer.from(s.storage.blobs.get(headerStorageKey(slot))!, "base64").subarray(0, 21).toString("hex");
+      assert.equal(prefix("a"), prefix("b"), "identical version, params and salt");
+      // Survives both kinds of PIN change.
+      await s.vault.unlock(REAL_PIN);
+      await s.vault.changePin("cover", null, "3141");
+      await s.vault.changePin("real", REAL_PIN, "592653");
+      assert.equal(prefix("a"), prefix("b"), "still identical after PIN changes");
+      // A different salt in one header is inconsistent storage, not a wrong PIN.
+      const h = Buffer.from(s.storage.blobs.get(headerStorageKey("b"))!, "base64");
+      h[10] ^= 0xff;
+      s.storage.blobs.set(headerStorageKey("b"), h.toString("base64"));
+      s.vault.lock();
+      await rejectsWith(s.vault.unlock("592653"), "CORRUPT");
+    }
+  });
+
+  it("scrypt cost per operation: create 2, unlock 1, changePin(real) 2, changePin(cover) 1", async () => {
+    const s = setup();
+    await s.vault.createVaults(REAL_PIN, COVER_PIN);
+    assert.equal(s.scryptSalts.length, 2);
+    assert.equal(new Set(s.scryptSalts).size, 1, "same salt for both PINs");
+    s.scryptSalts.length = 0;
+    await s.vault.changePin("real", REAL_PIN, "135790");
+    assert.equal(s.scryptSalts.length, 2, "old PIN check + new PIN (reused for clash check and wrap)");
+    s.scryptSalts.length = 0;
+    await s.vault.changePin("cover", null, "8642");
+    assert.equal(s.scryptSalts.length, 1, "new PIN (reused for clash check and wrap)");
+    s.vault.lock();
+    s.scryptSalts.length = 0;
+    await s.vault.unlock("8642");
+    assert.equal(s.scryptSalts.length, 1);
   });
 
   it("lock() overwrites the in-memory key buffers and blocks access", async () => {
@@ -462,6 +526,11 @@ describe("vault", () => {
       needles.push([`${label} hex`, Buffer.from(Buffer.from(key).toString("hex"))]);
     }
     needles.push(["plaintext", Buffer.from(MARKER)]);
+    for (const out of s.scryptOutputs) {
+      needles.push(["stretched PIN", Buffer.from(out)]);
+      needles.push(["stretched PIN hex", Buffer.from(Buffer.from(out).toString("hex"))]);
+    }
+    assert.ok(s.scryptOutputs.length >= 6, "captured the stretched PINs");
 
     const blobHaystacks = [...s.storage.blobs.values()].flatMap((v) => [Buffer.from(v), Buffer.from(v, "base64")]);
     // The device secret may only live in secure storage, never in blobs.

@@ -17,8 +17,12 @@
  * Header (94 bytes):
  *   [0] version=1 [1] kdf=1 (scrypt) [2] log2(N) [3] r [4] p [5..21) salt
  *   [21..45) nonce [45..94) XChaCha20-Poly1305( kind(1) || dataKey(32) )
- *   KEK  = HKDF-SHA256(ikm = scrypt(PIN, salt, N, r, p), salt = deviceSecret, info = "srv1/kek/" + slot)
+ *   header[0..21) (version, KDF params, salt) is IDENTICAL in both slots: one install-wide salt.
+ *   S    = scrypt(PIN, salt, N, r, p)                       — computed ONCE per unlock
+ *   KEK  = HKDF-SHA256(ikm = S, salt = deviceSecret, info = "srv1/kek/" + slot)
  *   AAD  = "srv|wrap|" + slot + "|" + header[0..21)
+ *   The salt and parameters are fixed for the life of the install (until wipeAll + setup):
+ *   re-wrapping one slot with a new salt would need the other slot's PIN, which is not held.
  *
  * Record:
  *   [0] version=1 [1..25) nonce [25..) XChaCha20-Poly1305 under the vault's data key
@@ -70,10 +74,12 @@ export type ScryptFn = (
 export interface VaultDeps {
   storage: VaultStorage;
   randomBytes: RandomBytes;
-  /** Parameters for NEW wraps (create / changePin). Unlock always uses the header's. */
+  /** Parameters for createVaults. Every later operation uses the parameters stored in the headers. */
   kdfParams?: KdfParams;
   /** Override the scrypt implementation (tests count calls; a native scrypt gives identical output). */
   scrypt?: ScryptFn;
+  /** Tests only: called once per slot unwrap attempt. Receives the slot id, nothing secret. */
+  onUnwrapAttempt?: (slot: SlotId) => void;
 }
 
 export const REAL_RECORDS = ["reports", "working", "tombstones", "profile"] as const;
@@ -145,13 +151,20 @@ const RECORD_MIN_LEN = 1 + NONCE_LEN + TAG_LEN;
 const PAD_BLOCK = 256;
 
 /**
- * Default scrypt cost for new wraps: N=2^14, r=8, p=1 (16 MiB).
- * Chosen for pure-JS scrypt on Hermes (no JIT) on a mid-range Android phone, where
- * unlock runs TWO derivations. Retune after on-device measurement; old headers keep
- * their own parameters, so a change applies on the next changePin with no migration.
+ * Default scrypt cost for new installs: N=2^15, r=8, p=1 (32 MiB).
+ * Unlock runs ONE derivation (shared salt), so this costs the same wall time as the earlier
+ * two derivations at 2^14, with double the memory hardness. Retune from the on-device
+ * speed test. Existing installs keep the parameters in their headers; a change applies to
+ * installs set up after it (no migration).
  */
-export const DEFAULT_KDF_PARAMS: KdfParams = { logN: 14, r: 8, p: 1 };
+export const DEFAULT_KDF_PARAMS: KdfParams = { logN: 15, r: 8, p: 1 };
 const KDF_BOUNDS = { logN: [10, 18], r: [1, 16], p: [1, 4] } as const;
+
+/**
+ * The scrypt the vault uses on device: noble's async variant, yielding to the event loop
+ * every ~10 ms so the UI stays responsive. Exported so the speed test measures exactly this.
+ */
+export const defaultScrypt: ScryptFn = (pw, salt, o) => scryptAsync(pw, salt, { ...o, asyncTick: 10 });
 
 const SLOTS: readonly SlotId[] = ["a", "b"];
 const RECORD_COUNT = 5;
@@ -305,7 +318,7 @@ type Session = { kind: VaultKind; slot: SlotId; key: Uint8Array };
 export function makeVault(deps: VaultDeps): Vault {
   const { storage } = deps;
   const kdfParams = validateKdfParams(deps.kdfParams ?? DEFAULT_KDF_PARAMS);
-  const scrypt: ScryptFn = deps.scrypt ?? ((pw, salt, o) => scryptAsync(pw, salt, { ...o, asyncTick: 10 }));
+  const scrypt: ScryptFn = deps.scrypt ?? defaultScrypt;
 
   const randomBytes = (n: number): Uint8Array => {
     const out = deps.randomBytes(n);
@@ -357,35 +370,35 @@ export function makeVault(deps: VaultDeps): Vault {
     return hexToBytes(hex);
   }
 
-  async function loadHeaders(): Promise<Record<SlotId, Header>> {
+  /** Both headers, plus their shared prefix (version, KDF params, salt), which must be identical. */
+  async function loadHeaders(): Promise<{ a: Header; b: Header; shared: Header }> {
     const [a, b] = await Promise.all([storage.get(headerStorageKey("a")), storage.get(headerStorageKey("b"))]);
     if (a === null || b === null) throw new VaultError("NOT_INITIALIZED", "Not set up.");
-    return { a: parseHeader(a), b: parseHeader(b) };
+    const ha = parseHeader(a);
+    const hb = parseHeader(b);
+    if (!equalBytes(ha.prefix, hb.prefix)) throw new VaultError("CORRUPT", "Stored data is inconsistent.");
+    return { a: ha, b: hb, shared: ha };
   }
 
-  async function deriveKek(
-    pin: Uint8Array,
-    salt: Uint8Array,
-    params: KdfParams,
-    slot: SlotId,
-    deviceSecret: Uint8Array,
-  ): Promise<Uint8Array> {
-    const stretched = await scrypt(pin, salt, { N: 2 ** params.logN, r: params.r, p: params.p, dkLen: KEY_LEN });
-    try {
-      return hkdf(sha256, stretched, deviceSecret, utf8ToBytes(`srv1/kek/${slot}`), KEY_LEN);
-    } finally {
-      stretched.fill(0);
-    }
+  /** The one expensive step. The result is PIN-equivalent: zero it after use. */
+  function stretch(pin: Uint8Array, salt: Uint8Array, params: KdfParams): Promise<Uint8Array> {
+    return scrypt(pin, salt, { N: 2 ** params.logN, r: params.r, p: params.p, dkLen: KEY_LEN });
   }
 
-  /** One full unwrap attempt (scrypt + AEAD). Null iff the tag does not verify. */
-  async function tryUnwrap(
+  /** Cheap per-slot separation of the shared stretched PIN, bound to the device secret. */
+  function kekFor(stretched: Uint8Array, slot: SlotId, deviceSecret: Uint8Array): Uint8Array {
+    return hkdf(sha256, stretched, deviceSecret, utf8ToBytes(`srv1/kek/${slot}`), KEY_LEN);
+  }
+
+  /** One unwrap attempt for one slot (HKDF + AEAD). Null iff the tag does not verify. */
+  function tryUnwrap(
     header: Header,
     slot: SlotId,
-    pin: Uint8Array,
+    stretched: Uint8Array,
     deviceSecret: Uint8Array,
-  ): Promise<{ kind: VaultKind; key: Uint8Array } | null> {
-    const kek = await deriveKek(pin, header.salt, header.params, slot, deviceSecret);
+  ): { kind: VaultKind; key: Uint8Array } | null {
+    deps.onUnwrapAttempt?.(slot);
+    const kek = kekFor(stretched, slot, deviceSecret);
     let pt: Uint8Array;
     try {
       pt = xchacha20poly1305(kek, header.nonce, wrapAad(slot, header.prefix)).decrypt(header.wrapped);
@@ -404,20 +417,17 @@ export function makeVault(deps: VaultDeps): Vault {
     }
   }
 
-  async function buildHeader(
+  /** Wraps a data key for one slot under the shared prefix, with a fresh nonce. */
+  function buildHeader(
     slot: SlotId,
-    pin: Uint8Array,
+    prefix: Uint8Array,
+    stretched: Uint8Array,
     dataKey: Uint8Array,
     kind: VaultKind,
     deviceSecret: Uint8Array,
-  ): Promise<string> {
-    const salt = randomBytes(SALT_LEN);
+  ): string {
     const nonce = randomBytes(NONCE_LEN);
-    const prefix = concatBytes(
-      Uint8Array.of(FORMAT_VERSION, KDF_SCRYPT, kdfParams.logN, kdfParams.r, kdfParams.p),
-      salt,
-    );
-    const kek = await deriveKek(pin, salt, kdfParams, slot, deviceSecret);
+    const kek = kekFor(stretched, slot, deviceSecret);
     const pt = concatBytes(Uint8Array.of(kind === "real" ? KIND_REAL : KIND_COVER), dataKey);
     try {
       const wrapped = xchacha20poly1305(kek, nonce, wrapAad(slot, prefix)).encrypt(pt);
@@ -480,6 +490,8 @@ export function makeVault(deps: VaultDeps): Vault {
         let deviceSecret: Uint8Array | null = null;
         let realKey: Uint8Array | null = null;
         let coverKey: Uint8Array | null = null;
+        let sReal: Uint8Array | null = null;
+        let sCover: Uint8Array | null = null;
         try {
           if (equalBytes(rp, cp)) throw new VaultError("PINS_NOT_DISTINCT", "The two PINs must be different.");
           const [a, b] = await Promise.all([
@@ -502,8 +514,16 @@ export function makeVault(deps: VaultDeps): Vault {
             await writeRecord(realSlot, realKey, i, REAL_LAYOUT[i], i === COVER_KEY_INDEX ? coverKey : null);
             await writeRecord(coverSlot, coverKey, i, COVER_LAYOUT[i], null);
           }
-          const realHeader = await buildHeader(realSlot, rp, realKey, "real", deviceSecret);
-          const coverHeader = await buildHeader(coverSlot, cp, coverKey, "cover", deviceSecret);
+          // One install-wide salt and parameter set, shared by both headers.
+          const salt = randomBytes(SALT_LEN);
+          const prefix = concatBytes(
+            Uint8Array.of(FORMAT_VERSION, KDF_SCRYPT, kdfParams.logN, kdfParams.r, kdfParams.p),
+            salt,
+          );
+          sReal = await stretch(rp, salt, kdfParams);
+          sCover = await stretch(cp, salt, kdfParams);
+          const realHeader = buildHeader(realSlot, prefix, sReal, realKey, "real", deviceSecret);
+          const coverHeader = buildHeader(coverSlot, prefix, sCover, coverKey, "cover", deviceSecret);
           await storage.set(headerStorageKey(coverSlot), coverHeader);
           await storage.set(headerStorageKey(realSlot), realHeader);
 
@@ -512,6 +532,8 @@ export function makeVault(deps: VaultDeps): Vault {
           rp.fill(0);
           cp.fill(0);
           if (realKey && session?.key !== realKey) realKey.fill(0); // failed mid-way
+          sReal?.fill(0);
+          sCover?.fill(0);
           deviceSecret?.fill(0);
           coverKey?.fill(0);
         }
@@ -524,10 +546,12 @@ export function makeVault(deps: VaultDeps): Vault {
           lockInternal();
           const headers = await loadHeaders();
           const deviceSecret = await loadDeviceSecret();
+          let stretched: Uint8Array | null = null;
           try {
-            // Always both, always in the same order, regardless of the first result.
-            const ra = await tryUnwrap(headers.a, "a", p, deviceSecret);
-            const rb = await tryUnwrap(headers.b, "b", p, deviceSecret);
+            // One scrypt, then BOTH slots, always in the same order, regardless of the first result.
+            stretched = await stretch(p, headers.shared.salt, headers.shared.params);
+            const ra = tryUnwrap(headers.a, "a", stretched, deviceSecret);
+            const rb = tryUnwrap(headers.b, "b", stretched, deviceSecret);
             if (ra && rb) {
               ra.key.fill(0);
               rb.key.fill(0);
@@ -538,6 +562,7 @@ export function makeVault(deps: VaultDeps): Vault {
             session = hit;
             return { kind: hit.kind };
           } finally {
+            stretched?.fill(0);
             deviceSecret.fill(0);
           }
         } finally {
@@ -603,38 +628,43 @@ export function makeVault(deps: VaultDeps): Vault {
         const coverSlot = otherSlot(realSlot);
         try {
           const headers = await loadHeaders();
+          const { salt, params, prefix } = headers.shared;
           const deviceSecret = await loadDeviceSecret();
           let coverKey: Uint8Array | null = null;
+          let sOld: Uint8Array | null = null;
+          let sNew: Uint8Array | null = null;
           try {
             if (kind === "real") {
-              const check = await tryUnwrap(headers[realSlot], realSlot, op!, deviceSecret);
+              sOld = await stretch(op!, salt, params);
+              const check = tryUnwrap(headers[realSlot], realSlot, sOld, deviceSecret);
               const matches = check !== null && check.kind === "real" && equalBytes(check.key, s.key);
               check?.key.fill(0);
               if (!matches) throw new VaultError("WRONG_PIN", "Current PIN is not correct.");
-              const clash = await tryUnwrap(headers[coverSlot], coverSlot, np, deviceSecret);
-              if (clash) {
-                clash.key.fill(0);
-                throw new VaultError("PINS_NOT_DISTINCT", "The two PINs must be different.");
-              }
+            }
+            // The same stretched new PIN serves the clash check and the new wrap.
+            sNew = await stretch(np, salt, params);
+            const otherKindSlot = kind === "real" ? coverSlot : realSlot;
+            const clash = tryUnwrap(headers[otherKindSlot], otherKindSlot, sNew, deviceSecret);
+            if (clash) {
+              clash.key.fill(0);
+              throw new VaultError("PINS_NOT_DISTINCT", "The two PINs must be different.");
+            }
+            if (kind === "real") {
               assertActive(s);
-              const header = await buildHeader(realSlot, np, s.key, "real", deviceSecret);
-              assertActive(s);
+              const header = buildHeader(realSlot, prefix, sNew, s.key, "real", deviceSecret);
               await storage.set(headerStorageKey(realSlot), header);
             } else {
-              const clash = await tryUnwrap(headers[realSlot], realSlot, np, deviceSecret);
-              if (clash) {
-                clash.key.fill(0);
-                throw new VaultError("PINS_NOT_DISTINCT", "The two PINs must be different.");
-              }
               coverKey = await readSessionRecord(s, COVER_KEY_INDEX, REAL_LAYOUT[COVER_KEY_INDEX]);
               if (coverKey === null || coverKey.length !== KEY_LEN) {
                 throw new VaultError("CORRUPT", "Stored data is inconsistent.");
               }
-              const header = await buildHeader(coverSlot, np, coverKey, "cover", deviceSecret);
+              const header = buildHeader(coverSlot, prefix, sNew, coverKey, "cover", deviceSecret);
               assertActive(s);
               await storage.set(headerStorageKey(coverSlot), header);
             }
           } finally {
+            sOld?.fill(0);
+            sNew?.fill(0);
             deviceSecret.fill(0);
             coverKey?.fill(0);
           }
