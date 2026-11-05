@@ -9,8 +9,9 @@
  * "Diagnostics" row in Settings. The root layout redirects locked sessions to /unlock and cover
  * sessions to /cover; this screen also refuses to load counts without a real session PIN.
  *
- * Test builds also get a speed test: it times scrypt with a random dummy PIN and salt, and
- * touches no storage, no vault, no device secret and no session.
+ * Test builds also get a speed test: a JS-vs-native self-test on fixed vectors, and scrypt
+ * timings (JS and native) with random dummy PINs and salts. It touches no storage, no vault,
+ * no device secret and no session.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -24,6 +25,10 @@ import {
   runKdfBenchmark,
   type BenchmarkResult,
 } from "../../src/lib/vault/kdfBenchmark";
+import { getVaultScryptChoice } from "../../src/lib/vault/expoStorage";
+import { isNativeScryptAvailable, nativeVaultScrypt } from "../../src/lib/vault/nativeScrypt";
+import { compareImplementations, type ScryptChoice } from "../../src/lib/vault/scryptSelect";
+import { defaultScrypt } from "../../src/lib/vault/vault";
 import { getSessionPin } from "../../src/state/session";
 import { getStorageDiagnostics, type StorageDiagnostics } from "../../src/state/storageDiagnostics";
 import { colors } from "../../src/theme/colors";
@@ -64,13 +69,25 @@ const STRINGS = {
   filesUnreferenced: "Not referenced",
   filesMissing: "Referenced but missing",
   sectionSpeed: "Speed test",
-  speedIntro: "Times one key derivation per level with dummy input. Nothing is read or changed.",
+  speedIntro: "Fixed test vectors and dummy input only. Nothing stored is read or changed.",
   speedEngine: "JS engine",
   speedRun: "Speed test",
   speedRunning: "Running…",
   speedPending: "—",
   speedFailed: "Speed test could not be completed.",
+  nativeAvailable: "Native module",
+  inUse: "Key derivation in use",
+  inUseNative: "native",
+  inUseJs: "JS (fallback)",
+  selfTitle: "Self-test (fixed vectors, JS vs native)",
+  selfMatch: "Outputs match",
+  selfRun: "Run self-test",
+  jsTitle: "JS (noble)",
+  nativeTitle: "Native",
+  nativeRun: "Native speed test",
 } as const;
+
+const NATIVE_LOG_N = [14, 15, 16] as const;
 
 type LoadState =
   | { kind: "loading" }
@@ -105,38 +122,95 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+type Busy = null | "selftest" | "noble" | "native";
+
+function ActionButton({ label, busy, onPress }: { label: string; busy: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={busy}
+      style={{
+        backgroundColor: colors.accent,
+        opacity: busy ? 0.5 : 1,
+        paddingVertical: 12,
+        borderRadius: 12,
+        marginTop: 10,
+      }}
+    >
+      <Text style={{ color: colors.onAccent, textAlign: "center", fontSize: 15, ...poppins("600") }}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function SubTitle({ children }: { children: ReactNode }) {
+  return <Text style={{ color: colors.text, fontSize: 14, marginTop: 14, ...poppins("600") }}>{children}</Text>;
+}
+
+/**
+ * Test builds only. Everything here uses fixed test vectors or random dummy PINs and salts:
+ * no storage, vault, device secret or session is read or written, and nothing is logged.
+ * One run at a time (shared busy flag) so timings don't compete for the CPU.
+ */
 function SpeedTest() {
-  const [results, setResults] = useState<BenchmarkResult[]>([]);
-  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState<Busy>(null);
   const [failed, setFailed] = useState(false);
+  const [noble, setNoble] = useState<BenchmarkResult[]>([]);
+  const [native, setNative] = useState<BenchmarkResult[]>([]);
+  const [selfTest, setSelfTest] = useState<Awaited<ReturnType<typeof compareImplementations>> | null>(null);
+  const [choice, setChoice] = useState<ScryptChoice | null>(null);
   const cancelled = useRef(false);
   const engine = useRef(describeJsEngine()).current;
+  const nativeAvailable = useRef(isNativeScryptAvailable()).current;
 
   useEffect(() => {
     cancelled.current = false;
+    getVaultScryptChoice()
+      .then((c) => {
+        if (!cancelled.current) setChoice(c);
+      })
+      .catch(() => {});
     return () => {
       cancelled.current = true; // stop after the current level if the screen goes away
     };
   }, []);
 
-  const run = useCallback(async () => {
-    setRunning(true);
+  const run = useCallback(async (kind: Exclude<Busy, null>) => {
+    setBusy(kind);
     setFailed(false);
-    setResults([]);
     try {
-      await runKdfBenchmark({
-        randomBytes: getRandomBytes,
-        isCancelled: () => cancelled.current,
-        onResult: (r) => {
-          if (!cancelled.current) setResults((prev) => [...prev, r]);
-        },
-      });
+      if (kind === "selftest") {
+        setSelfTest(null);
+        const result = await compareImplementations(defaultScrypt, nativeAvailable ? nativeVaultScrypt : null);
+        if (!cancelled.current) setSelfTest(result);
+      } else {
+        const setResults = kind === "noble" ? setNoble : setNative;
+        setResults([]);
+        await runKdfBenchmark({
+          randomBytes: getRandomBytes,
+          levels: kind === "noble" ? BENCHMARK_LOG_N : NATIVE_LOG_N,
+          scrypt: kind === "noble" ? defaultScrypt : nativeVaultScrypt,
+          isCancelled: () => cancelled.current,
+          onResult: (r) => {
+            if (!cancelled.current) setResults((prev) => [...prev, r]);
+          },
+        });
+      }
     } catch {
       if (!cancelled.current) setFailed(true); // no error text shown or logged
     } finally {
-      if (!cancelled.current) setRunning(false);
+      if (!cancelled.current) setBusy(null);
     }
-  }, []);
+  }, [nativeAvailable]);
+
+  const timingRows = (levels: readonly number[], results: BenchmarkResult[], running: boolean) =>
+    levels.map((logN) => {
+      const r = results.find((x) => x.logN === logN);
+      const label = `N=2^${logN}, r=8, p=1 (${(128 * 8 * 2 ** logN) / 2 ** 20} MiB)`;
+      const value = r ? `${r.seconds.toFixed(2)} s` : running ? STRINGS.speedRunning : STRINGS.speedPending;
+      return <Row key={logN} label={label} value={value} />;
+    });
+
+  const yesNo = (v: boolean) => (v ? STRINGS.yes : STRINGS.no);
 
   return (
     <Section title={STRINGS.sectionSpeed}>
@@ -144,30 +218,39 @@ function SpeedTest() {
         {STRINGS.speedIntro}
       </Text>
       <Row label={STRINGS.speedEngine} value={engine} />
-      {BENCHMARK_LOG_N.map((logN) => {
-        const r = results.find((x) => x.logN === logN);
-        const label = `N=2^${logN}, r=8, p=1 (${(128 * 8 * 2 ** logN) / 2 ** 20} MiB)`;
-        const value = r ? `${r.seconds.toFixed(2)} s` : running ? STRINGS.speedRunning : STRINGS.speedPending;
-        return <Row key={logN} label={label} value={value} />;
-      })}
+      <Row label={STRINGS.nativeAvailable} value={yesNo(nativeAvailable)} />
+      <Row
+        label={STRINGS.inUse}
+        value={choice === null ? STRINGS.speedPending : choice === "native" ? STRINGS.inUseNative : STRINGS.inUseJs}
+      />
+
+      <SubTitle>{STRINGS.selfTitle}</SubTitle>
+      <Row
+        label={STRINGS.selfMatch}
+        value={selfTest ? yesNo(selfTest.allMatch) : busy === "selftest" ? STRINGS.speedRunning : STRINGS.speedPending}
+      />
+      {selfTest?.vectors.map((v) => (
+        <Row key={v.name} label={v.name} value={`JS ${v.nobleOk ? "ok" : "✗"} · native ${v.nativeOk ? "ok" : "✗"}`} />
+      ))}
+      <ActionButton label={STRINGS.selfRun} busy={busy !== null} onPress={() => void run("selftest")} />
+
+      <SubTitle>{STRINGS.jsTitle}</SubTitle>
+      {timingRows(BENCHMARK_LOG_N, noble, busy === "noble")}
+      <ActionButton label={STRINGS.speedRun} busy={busy !== null} onPress={() => void run("noble")} />
+
+      <SubTitle>{STRINGS.nativeTitle}</SubTitle>
+      {nativeAvailable ? (
+        <>
+          {timingRows(NATIVE_LOG_N, native, busy === "native")}
+          <ActionButton label={STRINGS.nativeRun} busy={busy !== null} onPress={() => void run("native")} />
+        </>
+      ) : (
+        <Row label={STRINGS.nativeAvailable} value={STRINGS.no} />
+      )}
+
       {failed ? (
-        <Text style={{ color: colors.error, marginTop: 6, ...poppins("500") }}>{STRINGS.speedFailed}</Text>
+        <Text style={{ color: colors.error, marginTop: 8, ...poppins("500") }}>{STRINGS.speedFailed}</Text>
       ) : null}
-      <Pressable
-        onPress={() => void run()}
-        disabled={running}
-        style={{
-          backgroundColor: colors.accent,
-          opacity: running ? 0.5 : 1,
-          paddingVertical: 12,
-          borderRadius: 12,
-          marginTop: 10,
-        }}
-      >
-        <Text style={{ color: colors.onAccent, textAlign: "center", fontSize: 15, ...poppins("600") }}>
-          {running ? STRINGS.speedRunning : STRINGS.speedRun}
-        </Text>
-      </Pressable>
     </Section>
   );
 }
