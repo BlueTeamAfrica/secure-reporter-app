@@ -15,5 +15,14 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
     "base-64.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "babel.config.js",
+    "metro.config.js",
+    "jest.config.js",
+    "android",
+    "ios",
+    "functions"
   ]
 }
