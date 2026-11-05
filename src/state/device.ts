@@ -1,12 +1,16 @@
+/**
+ * Device setup, unlock and lockout. No PIN and no PIN hash is stored anywhere: a PIN is
+ * correct only if it opens a vault (see src/lib/vault/vault.ts).
+ *
+ * Lockout counters stay in plain SecureStore. They hold only a count and a timestamp.
+ */
 import * as SecureStore from "expo-secure-store";
-import * as Crypto from "expo-crypto";
-import { clearSessionPin } from "./session";
-import { clearAllDrafts } from "./drafts";
-import { clearReporterProfile } from "./reporterProfile";
 
-const DEVICE_CONFIGURED_KEY = "device_configured";
-const DEVICE_PIN_HASH_KEY = "device_pin_hash";
-const DEVICE_DECOY_PIN_HASH_KEY = "device_decoy_pin_hash";
+import { deleteAllImportedAttachments } from "../lib/attachments/persistLocal";
+import { getVault, getVaultScryptChoice } from "../lib/vault/expoStorage";
+import { VaultError, type VaultKind } from "../lib/vault/vault";
+import { endSession, markSessionStarted } from "./session";
+
 const DEVICE_FAILED_ATTEMPTS_KEY = "device_failed_attempts";
 const DEVICE_LOCKOUT_UNTIL_KEY = "device_lockout_until";
 
@@ -17,63 +21,56 @@ const HARD_COOLDOWN_MS = 60 * 1000;
 
 const RANDOMIZE_KEYPAD_KEY = "randomize_keypad";
 
-async function hashPin(pin: string) {
-  return await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    pin
-  );
+/** Test builds show this in Diagnostics. Duration only; no PIN-dependent detail. */
+let lastUnlockDurationMs: number | null = null;
+export function getLastUnlockDurationMs() {
+  return lastUnlockDurationMs;
 }
 
 export async function isDeviceConfigured() {
-  const value = await SecureStore.getItemAsync(DEVICE_CONFIGURED_KEY);
-  return value === "true";
+  return await getVault().isInitialized();
 }
 
-export async function markDeviceConfigured() {
-  await SecureStore.setItemAsync(DEVICE_CONFIGURED_KEY, "true");
+/** Throws VaultError("KDF_UNAVAILABLE") when this build cannot derive keys (no JS fallback). */
+async function requireKeyDerivation() {
+  if ((await getVaultScryptChoice()) !== "native") {
+    throw new VaultError("KDF_UNAVAILABLE", "Key derivation is not available on this device.");
+  }
 }
 
-export async function clearDeviceConfigured() {
-  clearSessionPin();
-  await clearAllDrafts();
-  await clearReporterProfile();
-  await SecureStore.deleteItemAsync(DEVICE_CONFIGURED_KEY);
-  await SecureStore.deleteItemAsync(DEVICE_PIN_HASH_KEY);
-  await SecureStore.deleteItemAsync(DEVICE_DECOY_PIN_HASH_KEY);
+/**
+ * Creates both vaults. Leaves a REAL session open (markSessionStarted is called), so setup can
+ * continue straight to the profile step.
+ */
+export async function createDevicePins(realPin: string, coverPin: string) {
+  await requireKeyDerivation();
+  await getVault().createVaults(realPin, coverPin);
+  markSessionStarted();
+  await resetFailedAttempts();
+}
+
+/**
+ * Tries the PIN against both vaults (always both). Returns the kind that opened, or null for a
+ * wrong PIN. Throws VaultError for INVALID_PIN, UNSUPPORTED_FORMAT, DEVICE_SECRET_MISSING,
+ * KDF_UNAVAILABLE, NOT_INITIALIZED, CORRUPT.
+ */
+export async function unlockWithPin(pin: string): Promise<VaultKind | null> {
+  await requireKeyDerivation();
+  const t0 = Date.now();
+  const result = await getVault().unlock(pin);
+  lastUnlockDurationMs = Date.now() - t0;
+  if (!result) return null;
+  markSessionStarted();
+  return result.kind;
+}
+
+/** Erases everything: vault (device secret first), attachment files, lockout counters. */
+export async function wipeDevice() {
+  endSession();
+  await getVault().wipeAll();
+  await deleteAllImportedAttachments();
   await SecureStore.deleteItemAsync(DEVICE_FAILED_ATTEMPTS_KEY);
   await SecureStore.deleteItemAsync(DEVICE_LOCKOUT_UNTIL_KEY);
-}
-
-export async function setDevicePin(pin: string) {
-  const pinHash = await hashPin(pin);
-  await SecureStore.setItemAsync(DEVICE_PIN_HASH_KEY, pinHash);
-  await SecureStore.setItemAsync(DEVICE_FAILED_ATTEMPTS_KEY, "0");
-  await SecureStore.deleteItemAsync(DEVICE_LOCKOUT_UNTIL_KEY);
-}
-
-export async function verifyDevicePin(pin: string) {
-  const storedHash = await SecureStore.getItemAsync(DEVICE_PIN_HASH_KEY);
-  if (!storedHash) return false;
-
-  const incomingHash = await hashPin(pin);
-  return storedHash === incomingHash;
-}
-
-export async function setDecoyPin(pin: string) {
-  const pinHash = await hashPin(pin);
-  await SecureStore.setItemAsync(DEVICE_DECOY_PIN_HASH_KEY, pinHash);
-}
-
-export async function hasDecoyPin() {
-  const value = await SecureStore.getItemAsync(DEVICE_DECOY_PIN_HASH_KEY);
-  return !!value;
-}
-
-export async function verifyDecoyPin(pin: string) {
-  const storedHash = await SecureStore.getItemAsync(DEVICE_DECOY_PIN_HASH_KEY);
-  if (!storedHash) return false;
-  const incomingHash = await hashPin(pin);
-  return storedHash === incomingHash;
 }
 
 export async function getFailedAttempts() {

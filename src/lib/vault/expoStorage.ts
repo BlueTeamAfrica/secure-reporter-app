@@ -1,8 +1,8 @@
 /**
  * Device adapter for the vault: AsyncStorage (blobs) + SecureStore (device secret) + expo-crypto,
- * and the scrypt implementation (native when available and self-tested, noble otherwise).
+ * and the scrypt implementation (native only, after its self-test; no JS fallback on device).
  *
- * NOT imported by the app's state modules yet. Phase 2 wires it in.
+ * Used through src/state/session.ts and src/state/device.ts.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getRandomBytes } from "expo-crypto";
@@ -10,7 +10,7 @@ import * as SecureStore from "expo-secure-store";
 
 import { loadNativeScrypt } from "./nativeScrypt";
 import { createScryptSelector, type ScryptChoice } from "./scryptSelect";
-import { defaultScrypt, makeVault, type Vault, type VaultStorage } from "./vault";
+import { makeVault, type Vault, type VaultStorage } from "./vault";
 
 // THIS_DEVICE_ONLY: the device secret never leaves this device through iCloud backup or
 // device migration. No requireAuthentication (decided: no biometric prompt).
@@ -27,10 +27,13 @@ export const expoVaultStorage: VaultStorage = {
   secureDelete: (key) => SecureStore.deleteItemAsync(key, SECURE_OPTIONS),
 };
 
-/** One decision per process: native if present and it reproduces the known answers, else noble. */
-const scryptSelector = createScryptSelector({ loadNative: loadNativeScrypt, fallback: defaultScrypt });
+/**
+ * One decision per process: native if present and it reproduces the known answers.
+ * NO JS fallback on device: otherwise createVaults/unlock fail with KDF_UNAVAILABLE.
+ */
+const scryptSelector = createScryptSelector({ loadNative: loadNativeScrypt, fallback: null });
 
-/** Which scrypt the vault uses on this device. Runs only the self-test; touches no storage. */
+/** Which scrypt the vault uses on this device ("unavailable" = cannot unlock or set up). Runs only the self-test; touches no storage. */
 export function getVaultScryptChoice(): Promise<ScryptChoice> {
   return scryptSelector.choice();
 }

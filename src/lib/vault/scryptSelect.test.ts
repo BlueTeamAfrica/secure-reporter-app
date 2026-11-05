@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { scrypt as nodeScryptCb, scryptSync } from "node:crypto";
+import { randomBytes, scrypt as nodeScryptCb, scryptSync } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { scryptMaxmem } from "./nativeScrypt.ts";
 import { compareImplementations, createScryptSelector, SCRYPT_VECTORS, scryptPassesSelfTest } from "./scryptSelect.ts";
-import { defaultScrypt, type ScryptFn } from "./vault.ts";
+import { defaultScrypt, makeVault, VaultError, type ScryptFn } from "./vault.ts";
 
 /**
  * Stand-in for the native module: Node's crypto.scrypt is OpenSSL EVP_PBE_scrypt, the same call
@@ -70,6 +70,46 @@ describe("scrypt implementation selection", () => {
       fallback: defaultScrypt,
     });
     assert.equal(await loaderThrows.choice(), "noble");
+  });
+
+  it("device mode (no fallback): unavailable unless native passes; derivation then fails with KDF_UNAVAILABLE", async () => {
+    const isUnavailable = (e: unknown) => e instanceof VaultError && e.code === "KDF_UNAVAILABLE";
+    const o = { N: 1024, r: 8, p: 1, dkLen: 32 };
+    for (const loadNative of [() => null, () => broken, () => throwing]) {
+      const sel = createScryptSelector({ loadNative, fallback: null });
+      assert.equal(await sel.choice(), "unavailable");
+      await assert.rejects(sel.scrypt(new Uint8Array(4), new Uint8Array(16), o), isUnavailable);
+    }
+    const ok = createScryptSelector({ loadNative: () => opensslScrypt, fallback: null });
+    assert.equal(await ok.choice(), "native");
+    const pw = new TextEncoder().encode("1234");
+    const salt = new Uint8Array(16).fill(3);
+    assert.deepEqual(await ok.scrypt(pw, salt, o), await defaultScrypt(pw, salt, o));
+
+    // Native passes the self-test, then fails at runtime: no silent JS fallback on device.
+    let calls = 0;
+    const flaky: ScryptFn = (p, s, opts) => (++calls > SCRYPT_VECTORS.length ? throwing(p, s, opts) : opensslScrypt(p, s, opts));
+    const sel = createScryptSelector({ loadNative: () => flaky, fallback: null });
+    assert.equal(await sel.choice(), "native");
+    await assert.rejects(sel.scrypt(pw, salt, o), isUnavailable);
+  });
+
+  it("a vault on a device without native scrypt fails cleanly and writes no headers", async () => {
+    const blobs = new Map<string, string>();
+    const secure = new Map<string, string>();
+    const storage = {
+      get: async (k: string) => blobs.get(k) ?? null,
+      set: async (k: string, v: string) => void blobs.set(k, v),
+      delete: async (k: string) => void blobs.delete(k),
+      secureGet: async (k: string) => secure.get(k) ?? null,
+      secureSet: async (k: string, v: string) => void secure.set(k, v),
+      secureDelete: async (k: string) => void secure.delete(k),
+    };
+    const sel = createScryptSelector({ loadNative: () => null, fallback: null });
+    const vault = makeVault({ storage, randomBytes: (n) => new Uint8Array(randomBytes(n)), scrypt: sel.scrypt });
+    await assert.rejects(vault.createVaults("482916", "7351"), (e: unknown) => e instanceof VaultError && e.code === "KDF_UNAVAILABLE");
+    assert.equal(await vault.isInitialized(), false, "no headers written: setup can be retried later");
+    assert.equal(vault.currentKind(), null);
   });
 
   it("selector: a native error after a passed self-test falls back to noble with the same output", async () => {

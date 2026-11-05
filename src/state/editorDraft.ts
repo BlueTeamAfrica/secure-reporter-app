@@ -1,8 +1,7 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getSessionPin } from "./session";
-import { encryptDraftText, decryptDraftText } from "../lib/crypto/drafts";
+import { getVault } from "../lib/vault/expoStorage";
+import { isRealSession } from "./session";
+import { getStoredReportIds, getTombstonedIds } from "./drafts";
 import type { DraftAttachment } from "../lib/attachments/types";
-import { REPORTS_KEY, PURGE_TOMBSTONES_KEY, WORKING_REPORT_KEY } from "./storageKeys";
 
 export type WorkingReport = {
   reportId?: string;
@@ -12,17 +11,17 @@ export type WorkingReport = {
   updatedAt: string;
 };
 
+/** Stored in the real vault's "working" record (encrypted as a whole by the vault). */
 type StoredWorkingReport = {
   reportId?: string;
-  encryptedTitle: string;
-  encryptedBody: string;
-  encryptedAttachments?: string;
+  title: string;
+  body: string;
+  attachments: DraftAttachment[];
   updatedAt: string;
 };
 
-// WORKING_REPORT_KEY imported from storageKeys.ts
 // Runtime-only snapshot of the current editor contents.
-// Used to flush a final encrypted autosave right before an aggressive lock clears the real session PIN.
+// Used to flush a final autosave right before a lock closes the vault.
 let runtimeWorkingReport: Omit<WorkingReport, "updatedAt"> | null = null;
 
 export function setRuntimeWorkingReportSnapshot(input: {
@@ -45,7 +44,7 @@ export function clearRuntimeWorkingReportSnapshot() {
 
 export async function flushRuntimeWorkingReportSnapshotToStorage() {
   if (!runtimeWorkingReport) return;
-  // Best-effort: if we're already locked/decoy, getSessionPin() will be null and saveWorkingReport will throw.
+  // Best-effort: if the vault is already locked or a cover session, saveWorkingReport throws.
   try {
     await saveWorkingReport({
       reportId: runtimeWorkingReport.reportId,
@@ -57,50 +56,30 @@ export async function flushRuntimeWorkingReportSnapshotToStorage() {
     // ignore
   }
 }
-// REPORTS_KEY, PURGE_TOMBSTONES_KEY imported from storageKeys.ts
 
 async function isActionableReportId(reportId: string) {
   try {
-    const tombstonesRaw = await AsyncStorage.getItem(PURGE_TOMBSTONES_KEY);
-    if (tombstonesRaw) {
-      const parsed: unknown = JSON.parse(tombstonesRaw);
-      if (
-        Array.isArray(parsed) &&
-        parsed.some((t: any) => t && t.clientSubmissionId === reportId)
-      ) {
-        return false;
-      }
-    }
+    if ((await getTombstonedIds()).has(reportId)) return false;
   } catch {
     // ignore
   }
-
   try {
-    const reportsRaw = await AsyncStorage.getItem(REPORTS_KEY);
-    if (!reportsRaw) return false;
-    const parsed: unknown = JSON.parse(reportsRaw);
-    if (!Array.isArray(parsed)) return false;
-    return parsed.some((r: any) => r && r.id === reportId);
+    return (await getStoredReportIds()).has(reportId);
   } catch {
     return false;
   }
 }
 
-function attachmentsToCipher(attachments: DraftAttachment[], pin: string) {
-  if (!attachments.length) return undefined;
-  return encryptDraftText(JSON.stringify(attachments), pin);
-}
-
-function cipherToAttachments(cipher: string | undefined, pin: string): DraftAttachment[] {
-  if (!cipher) return [];
-  try {
-    const plain = decryptDraftText(cipher, pin);
-    const parsed: unknown = JSON.parse(plain);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as DraftAttachment[];
-  } catch {
-    return [];
-  }
+function parseStored(value: unknown): StoredWorkingReport | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Partial<StoredWorkingReport>;
+  return {
+    reportId: typeof v.reportId === "string" ? v.reportId : undefined,
+    title: typeof v.title === "string" ? v.title : "",
+    body: typeof v.body === "string" ? v.body : "",
+    attachments: Array.isArray(v.attachments) ? v.attachments : [],
+    updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : new Date(0).toISOString(),
+  };
 }
 
 export async function saveWorkingReport(input: {
@@ -109,9 +88,8 @@ export async function saveWorkingReport(input: {
   body: string;
   attachments?: DraftAttachment[];
 }) {
-  const pin = getSessionPin();
-  if (!pin) {
-    throw new Error("Missing session PIN");
+  if (!isRealSession()) {
+    throw new Error("Vault locked");
   }
 
   const attachments = input.attachments ?? [];
@@ -122,48 +100,50 @@ export async function saveWorkingReport(input: {
 
   const next: StoredWorkingReport = {
     reportId,
-    encryptedTitle: encryptDraftText(input.title, pin),
-    encryptedBody: encryptDraftText(input.body, pin),
-    encryptedAttachments: attachmentsToCipher(attachments, pin),
+    title: input.title,
+    body: input.body,
+    attachments,
     updatedAt: new Date().toISOString(),
   };
 
-  await AsyncStorage.setItem(WORKING_REPORT_KEY, JSON.stringify(next));
+  await getVault().put("working", next);
 }
 
 export async function getWorkingReport(): Promise<WorkingReport | null> {
-  const pin = getSessionPin();
-  if (!pin) return null;
-
-  const raw = await AsyncStorage.getItem(WORKING_REPORT_KEY);
-  if (!raw) return null;
-
+  if (!isRealSession()) return null;
   try {
-    const parsed: StoredWorkingReport = JSON.parse(raw);
-
-    const title = decryptDraftText(parsed.encryptedTitle, pin);
-    const body = decryptDraftText(parsed.encryptedBody, pin);
-    const attachments = cipherToAttachments(parsed.encryptedAttachments, pin);
-
-    if (title === "" && body === "" && attachments.length === 0) return null;
-
-    return {
-      reportId: parsed.reportId,
-      title,
-      body,
-      attachments,
-      updatedAt: parsed.updatedAt,
-    };
+    const parsed = parseStored(await getVault().get("working"));
+    if (!parsed) return null;
+    if (parsed.title === "" && parsed.body === "" && parsed.attachments.length === 0) return null;
+    return parsed;
   } catch {
     return null;
   }
 }
 
-/** True when a working-draft record exists in storage, whether or not it can be decrypted. */
+/**
+ * True when a working-draft record exists, whether or not it is readable. Fails closed:
+ * if the record can't be read, assume it exists (attachment cleanup then deletes nothing).
+ */
 export async function hasStoredWorkingReport(): Promise<boolean> {
-  return (await AsyncStorage.getItem(WORKING_REPORT_KEY)) !== null;
+  if (!isRealSession()) return true;
+  try {
+    return (await getVault().get("working")) !== null;
+  } catch {
+    return true;
+  }
 }
 
 export async function clearWorkingReport() {
-  await AsyncStorage.removeItem(WORKING_REPORT_KEY);
+  if (!isRealSession()) return;
+  await getVault().remove("working");
+}
+
+/** Purge step: clears the working draft only if it belongs to the given report. */
+export async function clearWorkingReportIfFor(reportId: string) {
+  if (!isRealSession()) throw new Error("Vault locked");
+  const current = parseStored(await getVault().get("working"));
+  if (current?.reportId === reportId) {
+    await getVault().remove("working");
+  }
 }

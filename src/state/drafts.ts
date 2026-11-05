@@ -1,10 +1,10 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getSessionPin } from "./session";
-import { encryptDraftText, decryptDraftText } from "../lib/crypto/drafts";
+import { getVault } from "../lib/vault/expoStorage";
+import { isRealSession } from "./session";
 import { uploadEncryptedSubmission } from "../lib/submissions";
 import { getReporterMetadataForSubmission } from "./reporterProfile";
+import { clearWorkingReportIfFor } from "./editorDraft";
 import type { DraftAttachment, SubmittedAttachment } from "../lib/attachments/types";
-import { deleteAllImportedAttachments, deleteAttachmentsFiles } from "../lib/attachments/persistLocal";
+import { deleteAttachmentsFiles } from "../lib/attachments/persistLocal";
 import {
   deleteStoragePaths,
   readLocalAttachmentBytes,
@@ -15,7 +15,6 @@ import { attachmentReadFailedCode, missingAttachmentCode } from "../lib/attachme
 import { storageObjectName } from "../lib/attachments/fileNames";
 import { formatSubmissionPipelineError } from "../lib/attachments/submissionErrors";
 import { isMissingLocalAttachmentError } from "../lib/attachments/readLocalFileForUpload";
-import { REPORTS_KEY, PURGE_TOMBSTONES_KEY, WORKING_REPORT_KEY } from "./storageKeys";
 
 export type ReportStatus = "draft" | "ready" | "queued";
 export type SubmissionStatus =
@@ -53,25 +52,47 @@ export type PurgeTombstone = {
   serverSubmissionId: string;
 };
 
+/**
+ * Stored inside the real vault's "reports" record (encrypted as a whole by the vault).
+ * Every list change goes through vault.update(), so concurrent writes can't lose updates.
+ */
 type StoredReportRecord = {
   id: string;
-  encryptedTitle?: string;
-  encryptedBody?: string;
-  encryptedText?: string;
-  text?: string;
-  encryptedAttachments?: string;
+  title: string;
+  body: string;
+  status: ReportStatus;
+  submissionStatus: SubmissionStatus;
   createdAt: string;
-  updatedAt?: string;
-  status?: ReportStatus;
-  submissionStatus?: SubmissionStatus;
-  lastSubmissionAttemptAt?: string | null;
-  lastSubmissionError?: string;
+  updatedAt: string;
+  lastSubmissionAttemptAt: string | null;
+  attachments: DraftAttachment[];
+  lastSubmissionError?: string | null;
 };
-
-// REPORTS_KEY, PURGE_TOMBSTONES_KEY, WORKING_REPORT_KEY imported from storageKeys.ts
 
 // In-memory duplicate protection: avoid concurrent sync attempts for the same item.
 const inFlightClientSubmissionIds = new Set<string>();
+
+/**
+ * Server receipts that arrived after the vault was locked mid-send (ids only, memory only).
+ * Applied at the next real unlock, so a confirmed item is purged instead of being re-sent.
+ * Lost if the app is killed before then; the item is then re-sent with the same
+ * clientSubmissionId (same as a crash between receipt and purge before the vault).
+ */
+const pendingReceipts = new Map<string, { serverSubmissionId: string; confirmedAt: string }>();
+
+function vaultLocked(): Error {
+  return new Error("Vault locked");
+}
+
+function requireRealSession() {
+  if (!isRealSession()) throw vaultLocked();
+}
+
+function asList<T>(value: unknown): T[] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Stored list is not a list");
+  return value as T[];
+}
 
 function getSubmissionPayloadSecret(): string {
   const secret = process.env.EXPO_PUBLIC_SUBMISSION_PAYLOAD_SECRET;
@@ -79,23 +100,6 @@ function getSubmissionPayloadSecret(): string {
     throw new Error("Missing EXPO_PUBLIC_SUBMISSION_PAYLOAD_SECRET");
   }
   return secret;
-}
-
-function attachmentsToCipher(attachments: DraftAttachment[], pin: string) {
-  if (!attachments.length) return undefined;
-  return encryptDraftText(JSON.stringify(attachments), pin);
-}
-
-function cipherToAttachments(cipher: string | undefined, pin: string): DraftAttachment[] {
-  if (!cipher) return [];
-  try {
-    const plain = decryptDraftText(cipher, pin);
-    const parsed: unknown = JSON.parse(plain);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as DraftAttachment[];
-  } catch {
-    return [];
-  }
 }
 
 function normalizeAttachmentsForWorkflow(
@@ -124,182 +128,99 @@ function diffRemovedAttachments(
   return previous.filter((a) => !nextIds.has(a.id));
 }
 
-async function getStoredReports(): Promise<StoredReportRecord[]> {
-  const raw = await AsyncStorage.getItem(REPORTS_KEY);
-  if (!raw) return [];
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
+/** Throws when locked or when the record can't be read (corruption is never "no items"). */
+async function readStoredReports(): Promise<StoredReportRecord[]> {
+  requireRealSession();
+  return asList<StoredReportRecord>(await getVault().get("reports"));
 }
 
-async function saveStoredReports(reports: StoredReportRecord[]) {
-  await AsyncStorage.setItem(REPORTS_KEY, JSON.stringify(reports));
+/** The one write path for the item list. */
+async function mutateStoredReports(
+  fn: (list: StoredReportRecord[]) => StoredReportRecord[]
+): Promise<StoredReportRecord[]> {
+  requireRealSession();
+  return await getVault().update<StoredReportRecord[]>("reports", (current) =>
+    fn(asList<StoredReportRecord>(current))
+  );
 }
 
-async function getPurgeTombstones(): Promise<PurgeTombstone[]> {
-  const raw = await AsyncStorage.getItem(PURGE_TOMBSTONES_KEY);
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as PurgeTombstone[];
-  } catch {
-    return [];
-  }
+async function readPurgeTombstones(): Promise<PurgeTombstone[]> {
+  requireRealSession();
+  return asList<PurgeTombstone>(await getVault().get("tombstones"));
 }
 
 async function addPurgeTombstone(tombstone: PurgeTombstone) {
-  const existing = await getPurgeTombstones();
-  const next = [
+  requireRealSession();
+  await getVault().update<PurgeTombstone[]>("tombstones", (current) => [
     tombstone,
-    ...existing.filter((t) => t.clientSubmissionId !== tombstone.clientSubmissionId),
-  ];
-  await AsyncStorage.setItem(PURGE_TOMBSTONES_KEY, JSON.stringify(next));
+    ...asList<PurgeTombstone>(current).filter((t) => t.clientSubmissionId !== tombstone.clientSubmissionId),
+  ]);
+}
+
+/** Tombstoned ids, for callers outside this module (editorDraft). Throws when locked. */
+export async function getTombstonedIds(): Promise<Set<string>> {
+  return new Set((await readPurgeTombstones()).map((t) => t.clientSubmissionId));
+}
+
+/** Ids of stored items, for callers outside this module (editorDraft). Throws when locked. */
+export async function getStoredReportIds(): Promise<Set<string>> {
+  return new Set((await readStoredReports()).map((r) => r.id));
 }
 
 async function persistLastSubmissionError(id: string, message: string | null) {
-  const reports = await getStoredReports();
-  const next = reports.map((r) =>
-    r.id === id
-      ? {
-          ...r,
-          lastSubmissionError: message ? message : undefined,
-        }
-      : r
+  await mutateStoredReports((reports) =>
+    reports.map((r) => (r.id === id ? { ...r, lastSubmissionError: message ? message : undefined } : r))
   );
-  await saveStoredReports(next);
 }
 
 /**
- * Number of stored, non-purged report records, counted without decrypting.
- * Throws if the stored list can't be parsed, so corruption is never mistaken for "no reports".
+ * Number of stored, non-purged report records.
+ * Throws if the stored list can't be read, so corruption is never mistaken for "no reports".
  * Attachment cleanup compares this with getReports().length to detect dropped records.
  */
 export async function countStoredActionableReports(): Promise<number> {
-  const raw = await AsyncStorage.getItem(REPORTS_KEY);
-  if (!raw) return 0;
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error("Stored reports are not a list");
-  }
-  const tombstones = await getPurgeTombstones();
-  const tombstonedIds = new Set(tombstones.map((t) => t.clientSubmissionId));
-  return parsed.filter((r) => !tombstonedIds.has((r as StoredReportRecord | null)?.id ?? "")).length;
+  const stored = await readStoredReports();
+  const tombstonedIds = await getTombstonedIds();
+  return stored.filter((r) => !tombstonedIds.has(r?.id ?? "")).length;
 }
 
-export async function clearAllDrafts() {
-  await deleteAllImportedAttachments();
-  await AsyncStorage.removeItem(REPORTS_KEY);
-  await AsyncStorage.removeItem(PURGE_TOMBSTONES_KEY);
+/** Normalises a stored record; null when the app would not show it (same rules as before). */
+function toReportRecord(report: StoredReportRecord): ReportRecord | null {
+  if (!report || typeof report.id !== "string") return null;
+  if (typeof report.title !== "string" || typeof report.body !== "string") return null;
+  if (!report.title || !report.body) return null;
+  const status: ReportStatus = report.status ?? "draft";
+  const raw = report.submissionStatus ?? "not_submitted";
+  const submissionStatus: SubmissionStatus = status === "queued" && raw === "not_submitted" ? "queued" : raw;
+  return {
+    id: report.id,
+    title: report.title,
+    body: report.body,
+    status,
+    submissionStatus,
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt ?? report.createdAt,
+    lastSubmissionAttemptAt: report.lastSubmissionAttemptAt ?? null,
+    attachments: Array.isArray(report.attachments) ? report.attachments : [],
+    lastSubmissionError: report.lastSubmissionError ?? null,
+  };
 }
 
-function defaultSubmissionStatus(_status: ReportStatus): SubmissionStatus {
-  return "not_submitted";
-}
-
+/** Empty when locked, in a cover session, or when the stored list can't be read. */
 export async function getReports(): Promise<ReportRecord[]> {
-  const pin = getSessionPin();
-  const reports = await getStoredReports();
-  const tombstones = await getPurgeTombstones();
-  const tombstonedIds = new Set(tombstones.map((t) => t.clientSubmissionId));
-
+  if (!isRealSession()) return [];
+  let reports: StoredReportRecord[];
+  let tombstonedIds: Set<string>;
+  try {
+    reports = await readStoredReports();
+    tombstonedIds = await getTombstonedIds();
+  } catch {
+    console.warn("[DRAFTS] stored items could not be read");
+    return [];
+  }
   return reports
-    .filter((r) => !tombstonedIds.has(r.id))
-    .map((report) => {
-      const updatedAt = report.updatedAt ?? report.createdAt;
-      const status: ReportStatus = report.status ?? "draft";
-      // Migration: older state values are mapped into the new state machine.
-      const raw = (report.submissionStatus ?? defaultSubmissionStatus(status)) as any;
-      const submissionStatus: SubmissionStatus =
-        raw === "submitting"
-          ? "syncing"
-          : raw === "submitted"
-            ? "confirmed"
-            : raw === "purge_failed"
-              ? "purged"
-              : status === "queued" && raw === "not_submitted"
-                ? "queued"
-                : raw;
-      const lastSubmissionAttemptAt = report.lastSubmissionAttemptAt ?? null;
-      const lastSubmissionError = report.lastSubmissionError ?? null;
-      const attachments =
-        pin && report.encryptedAttachments
-          ? cipherToAttachments(report.encryptedAttachments, pin)
-          : [];
-
-      if (typeof report.text === "string") {
-        return {
-          id: report.id,
-          title: "Untitled note",
-          body: report.text,
-          status,
-          submissionStatus,
-          createdAt: report.createdAt,
-          updatedAt,
-          lastSubmissionAttemptAt,
-          attachments: [],
-          lastSubmissionError,
-        };
-      }
-
-      if (typeof report.encryptedText === "string") {
-        if (!pin) return null;
-
-        try {
-          const body = decryptDraftText(report.encryptedText, pin);
-          if (!body) return null;
-
-          return {
-            id: report.id,
-            title: "Untitled note",
-            body,
-            status,
-            submissionStatus,
-            createdAt: report.createdAt,
-            updatedAt,
-            lastSubmissionAttemptAt,
-            attachments: [],
-            lastSubmissionError,
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      if (
-        typeof report.encryptedTitle === "string" &&
-        typeof report.encryptedBody === "string"
-      ) {
-        if (!pin) return null;
-
-        try {
-          const title = decryptDraftText(report.encryptedTitle, pin);
-          const body = decryptDraftText(report.encryptedBody, pin);
-
-          if (!title || !body) return null;
-
-          return {
-            id: report.id,
-            title,
-            body,
-            status,
-            submissionStatus,
-            createdAt: report.createdAt,
-            updatedAt,
-            lastSubmissionAttemptAt,
-            attachments,
-            lastSubmissionError,
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      return null;
-    })
+    .filter((r) => !tombstonedIds.has(r?.id))
+    .map(toReportRecord)
     .filter(Boolean) as ReportRecord[];
 }
 
@@ -309,39 +230,33 @@ export async function saveReport(
   status: ReportStatus = "draft",
   attachments: DraftAttachment[] = []
 ) {
-  const pin = getSessionPin();
-  if (!pin) {
-    throw new Error("Missing session PIN");
-  }
-
-  const reports = await getStoredReports();
+  requireRealSession();
   const now = new Date().toISOString();
   const normalized = normalizeAttachmentsForWorkflow(status, attachments);
 
   const nextReport: StoredReportRecord = {
     id: String(Date.now()),
-    encryptedTitle: encryptDraftText(title, pin),
-    encryptedBody: encryptDraftText(body, pin),
-    encryptedAttachments: attachmentsToCipher(normalized, pin),
+    title,
+    body,
+    attachments: normalized,
     status,
-    submissionStatus: status === "queued" ? "queued" : defaultSubmissionStatus(status),
+    submissionStatus: status === "queued" ? "queued" : "not_submitted",
     createdAt: now,
     updatedAt: now,
     lastSubmissionAttemptAt: null,
   };
 
-  const next = [nextReport, ...reports];
-  await saveStoredReports(next);
+  await mutateStoredReports((reports) => [nextReport, ...reports]);
 
   return {
     id: nextReport.id,
     title,
     body,
     status,
-    submissionStatus: nextReport.submissionStatus!,
+    submissionStatus: nextReport.submissionStatus,
     createdAt: nextReport.createdAt,
-    updatedAt: nextReport.updatedAt!,
-    lastSubmissionAttemptAt: nextReport.lastSubmissionAttemptAt!,
+    updatedAt: nextReport.updatedAt,
+    lastSubmissionAttemptAt: nextReport.lastSubmissionAttemptAt,
     attachments: normalized,
     lastSubmissionError: null,
   };
@@ -354,52 +269,42 @@ export async function updateReport(
   status: ReportStatus = "draft",
   attachments?: DraftAttachment[]
 ) {
-  const pin = getSessionPin();
-  if (!pin) {
-    throw new Error("Missing session PIN");
-  }
-
-  const reports = await getStoredReports();
+  requireRealSession();
   const now = new Date().toISOString();
+  let removed: DraftAttachment[] = [];
+  let normalized: DraftAttachment[] = [];
 
-  const previousForId = reports.find((r) => r.id === id);
-  const previousAttachments =
-    previousForId?.encryptedAttachments && pin
-      ? cipherToAttachments(previousForId.encryptedAttachments, pin)
-      : [];
+  const next = await mutateStoredReports((reports) => {
+    const previousForId = reports.find((r) => r.id === id);
+    const previousAttachments = previousForId?.attachments ?? [];
+    const nextAttachmentsRaw = attachments === undefined ? previousAttachments : attachments;
+    removed = diffRemovedAttachments(previousForId ? previousAttachments : [], nextAttachmentsRaw);
+    normalized = normalizeAttachmentsForWorkflow(status, nextAttachmentsRaw);
 
-  const nextAttachmentsRaw =
-    attachments === undefined ? previousAttachments : attachments;
+    return reports.map((report) => {
+      if (report.id !== id) return report;
 
-  const removed = diffRemovedAttachments(previousForId ? previousAttachments : [], nextAttachmentsRaw);
-  await deleteAttachmentsFiles(removed);
+      let nextSubmission: SubmissionStatus = "not_submitted";
+      if (status === "queued") {
+        if (report.submissionStatus === "failed") nextSubmission = "failed";
+        else if (report.submissionStatus === "syncing") nextSubmission = "syncing";
+        else nextSubmission = "queued";
+      }
 
-  const normalized = normalizeAttachmentsForWorkflow(status, nextAttachmentsRaw);
-
-  const next = reports.map((report) => {
-    if (report.id !== id) return report;
-
-    let nextSubmission: SubmissionStatus = "not_submitted";
-    if (status === "queued") {
-      if ((report.submissionStatus as any) === "failed") nextSubmission = "failed";
-      else if ((report.submissionStatus as any) === "syncing") nextSubmission = "syncing";
-      else nextSubmission = "queued";
-    }
-
-    return {
-      ...report,
-      encryptedTitle: encryptDraftText(title, pin),
-      encryptedBody: encryptDraftText(body, pin),
-      encryptedAttachments: attachmentsToCipher(normalized, pin),
-      encryptedText: undefined,
-      text: undefined,
-      status,
-      submissionStatus: nextSubmission,
-      updatedAt: now,
-    };
+      return {
+        ...report,
+        title,
+        body,
+        attachments: normalized,
+        status,
+        submissionStatus: nextSubmission,
+        updatedAt: now,
+      };
+    });
   });
 
-  await saveStoredReports(next);
+  // Files of removed attachments are deleted only after the list no longer references them.
+  await deleteAttachmentsFiles(removed);
 
   const updated = next.find((report) => report.id === id);
   if (!updated) return null;
@@ -419,59 +324,49 @@ export async function updateReport(
 }
 
 export async function updateReportStatus(id: string, status: ReportStatus) {
-  const pin = getSessionPin();
-  if (!pin) {
-    throw new Error("Missing session PIN");
-  }
-
-  const reports = await getStoredReports();
   const now = new Date().toISOString();
+  await mutateStoredReports((reports) =>
+    reports.map((report) => {
+      if (report.id !== id) return report;
 
-  const next = reports.map((report) => {
-    if (report.id !== id) return report;
+      let attachmentsNext = report.attachments ?? [];
+      if (status === "ready" && report.status === "queued") {
+        attachmentsNext = attachmentsNext.map((a) => ({
+          ...a,
+          status: "local" as const,
+          uploadError: undefined,
+        }));
+      }
 
-    let encryptedAttachments = report.encryptedAttachments;
-    if (status === "ready" && report.status === "queued" && report.encryptedAttachments) {
-      const reset = cipherToAttachments(report.encryptedAttachments, pin).map((a) => ({
-        ...a,
-        status: "local" as const,
-        uploadError: undefined,
-      }));
-      encryptedAttachments = attachmentsToCipher(reset, pin);
-    }
-
-    return {
-      ...report,
-      status,
-      submissionStatus: status === "queued" ? "queued" : "not_submitted",
-      updatedAt: now,
-      encryptedAttachments,
-      lastSubmissionError: undefined,
-    } as StoredReportRecord;
-  });
-
-  await saveStoredReports(next);
+      return {
+        ...report,
+        status,
+        submissionStatus: status === "queued" ? "queued" : "not_submitted",
+        updatedAt: now,
+        attachments: attachmentsNext,
+        lastSubmissionError: undefined,
+      } as StoredReportRecord;
+    })
+  );
 }
 
 export async function updateSubmissionStatus(
   id: string,
   submissionStatus: SubmissionStatus
 ) {
-  const reports = await getStoredReports();
   const now = new Date().toISOString();
-
-  const next = reports.map((report) =>
-    report.id === id
-      ? {
-          ...report,
-          submissionStatus,
-          lastSubmissionAttemptAt: now,
-          updatedAt: now,
-        }
-      : report
+  await mutateStoredReports((reports) =>
+    reports.map((report) =>
+      report.id === id
+        ? {
+            ...report,
+            submissionStatus,
+            lastSubmissionAttemptAt: now,
+            updatedAt: now,
+          }
+        : report
+    )
   );
-
-  await saveStoredReports(next);
 }
 
 export async function purgeSubmittedReportLocally(input: {
@@ -487,15 +382,17 @@ export async function purgeSubmittedReportLocally(input: {
   }
 
   stageLog("load_reports");
-  const stored = await getStoredReports();
-  const target = stored.find((r) => r.id === input.clientSubmissionId) ?? null;
+  let target: StoredReportRecord | null = null;
+  try {
+    target = (await readStoredReports()).find((r) => r.id === input.clientSubmissionId) ?? null;
+  } catch (e) {
+    errors.push({ stage: "load_reports", message: e instanceof Error ? e.message : "unknown error" });
+  }
 
   stageLog("delete_attachment_files");
   try {
-    const pin = getSessionPin();
-    if (pin && target?.encryptedAttachments) {
-      const attachments = cipherToAttachments(target.encryptedAttachments, pin);
-      await deleteAttachmentsFiles(attachments);
+    if (target?.attachments?.length) {
+      await deleteAttachmentsFiles(target.attachments);
     }
   } catch (e) {
     errors.push({
@@ -506,13 +403,7 @@ export async function purgeSubmittedReportLocally(input: {
 
   stageLog("clear_working_buffer");
   try {
-    const rawWorking = await AsyncStorage.getItem(WORKING_REPORT_KEY);
-    if (rawWorking) {
-      const parsed = JSON.parse(rawWorking) as { reportId?: string } | null;
-      if (parsed?.reportId === input.clientSubmissionId) {
-        await AsyncStorage.removeItem(WORKING_REPORT_KEY);
-      }
-    }
+    await clearWorkingReportIfFor(input.clientSubmissionId);
   } catch (e) {
     errors.push({
       stage: "clear_working_buffer",
@@ -522,8 +413,7 @@ export async function purgeSubmittedReportLocally(input: {
 
   stageLog("remove_report_record");
   try {
-    const next = stored.filter((r) => r.id !== input.clientSubmissionId);
-    await saveStoredReports(next);
+    await mutateStoredReports((reports) => reports.filter((r) => r.id !== input.clientSubmissionId));
   } catch (e) {
     errors.push({
       stage: "remove_report_record",
@@ -555,32 +445,65 @@ export async function purgeSubmittedReportLocally(input: {
 }
 
 async function clearLocalAttachmentsAfterSuccessfulSend(id: string) {
-  const pin = getSessionPin();
-  if (!pin) return;
+  const target = (await readStoredReports()).find((r) => r.id === id);
+  if (!target?.attachments?.length) return;
 
-  const reports = await getStoredReports();
-  const target = reports.find((r) => r.id === id);
-  if (!target?.encryptedAttachments) return;
-
-  const atts = cipherToAttachments(target.encryptedAttachments, pin);
-  await deleteAttachmentsFiles(atts);
-
-  const next = reports.map((r) =>
-    r.id === id
-      ? {
-          ...r,
-          encryptedAttachments: undefined,
-          lastSubmissionError: undefined,
-        }
-      : r
+  await deleteAttachmentsFiles(target.attachments);
+  await mutateStoredReports((reports) =>
+    reports.map((r) => (r.id === id ? { ...r, attachments: [], lastSubmissionError: undefined } : r))
   );
-  await saveStoredReports(next);
+}
+
+/** Local steps after a confirmed server receipt. Throws "Vault locked" if the vault closed. */
+async function commitServerReceipt(clientSubmissionId: string, serverSubmissionId: string, confirmedAt: string) {
+  await updateSubmissionStatus(clientSubmissionId, "confirmed");
+  await clearLocalAttachmentsAfterSuccessfulSend(clientSubmissionId);
+  console.log("[SYNC] purge: start", { clientSubmissionId, serverSubmissionId });
+
+  // Defensive: only purge after confirmed server success. Retry once; on persistent failure,
+  // write a minimal tombstone so it disappears from UI without retaining content.
+  let purge = await purgeSubmittedReportLocally({ clientSubmissionId, serverSubmissionId });
+  if (!purge.ok) {
+    console.warn("[SYNC] purge failed; retrying once", { clientSubmissionId });
+    purge = await purgeSubmittedReportLocally({ clientSubmissionId, serverSubmissionId });
+  }
+  if (!purge.ok) {
+    requireRealSession(); // if the vault closed, keep the receipt pending instead
+    await addPurgeTombstone({
+      clientSubmissionId,
+      status: "purged",
+      confirmedAt,
+      serverSubmissionId,
+    }).catch(() => {});
+  }
+
+  await updateSubmissionStatus(clientSubmissionId, "purged").catch(() => {});
+}
+
+/**
+ * Applies receipts that arrived while the vault was locked. Call after a real unlock.
+ * Never throws; a receipt stays pending if the vault closes again.
+ */
+export async function applyPendingServerReceipts() {
+  if (!isRealSession() || pendingReceipts.size === 0) return;
+  for (const [clientSubmissionId, r] of [...pendingReceipts]) {
+    try {
+      await commitServerReceipt(clientSubmissionId, r.serverSubmissionId, r.confirmedAt);
+      pendingReceipts.delete(clientSubmissionId);
+      console.log("[SYNC] pending receipt applied", { clientSubmissionId });
+    } catch {
+      if (!isRealSession()) return;
+    }
+  }
 }
 
 export async function syncQueuedItem(clientSubmissionId: string) {
-  const pin = getSessionPin();
-  if (!pin) {
-    throw new Error("Missing session PIN");
+  requireRealSession();
+
+  if (pendingReceipts.has(clientSubmissionId)) {
+    // Already confirmed by the server while the vault was locked; never send twice.
+    await applyPendingServerReceipts();
+    return { status: "purged" as const, clientSubmissionId };
   }
 
   if (inFlightClientSubmissionIds.has(clientSubmissionId)) {
@@ -706,30 +629,19 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     });
 
     pipelineStep = "confirmed";
-    await updateSubmissionStatus(clientSubmissionId, "confirmed");
-    pipelineStep = "local_cleanup";
-    await clearLocalAttachmentsAfterSuccessfulSend(clientSubmissionId);
     const serverSubmissionId = serverReceipt.serverSubmissionId;
-    console.log("[SYNC] purge: start", { clientSubmissionId, serverSubmissionId });
-
-    // Defensive: only purge after confirmed server success. Retry once; on persistent failure,
-    // write a minimal tombstone so it disappears from UI without retaining content.
     const confirmedAt = new Date().toISOString();
-    let purge = await purgeSubmittedReportLocally({ clientSubmissionId, serverSubmissionId });
-    if (!purge.ok) {
-      console.warn("[SYNC] purge failed; retrying once", { clientSubmissionId });
-      purge = await purgeSubmittedReportLocally({ clientSubmissionId, serverSubmissionId });
+    try {
+      pipelineStep = "local_cleanup";
+      await commitServerReceipt(clientSubmissionId, serverSubmissionId, confirmedAt);
+    } catch (commitError) {
+      if (isRealSession()) throw commitError;
+      // The server has the item; the vault locked before local cleanup. Keep the receipt in
+      // memory and finish at the next real unlock instead of failing (which would re-send).
+      pendingReceipts.set(clientSubmissionId, { serverSubmissionId, confirmedAt });
+      console.warn("[SYNC] receipt kept pending: locked before local cleanup", { clientSubmissionId });
+      return { status: "purged" as const, serverSubmissionId, clientSubmissionId };
     }
-    if (!purge.ok) {
-      await addPurgeTombstone({
-        clientSubmissionId,
-        status: "purged",
-        confirmedAt,
-        serverSubmissionId,
-      }).catch(() => {});
-    }
-
-    await updateSubmissionStatus(clientSubmissionId, "purged").catch(() => {});
     console.log("[SYNC] complete", { clientSubmissionId, status: "purged" });
     return { status: "purged" as const, serverSubmissionId, clientSubmissionId };
   } catch (error) {
@@ -738,7 +650,13 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     // redacted, and upload messages have object paths removed.
     console.error("[SYNC] failed", { clientSubmissionId, stage: pipelineStep, message });
 
-    if (uploadedStoragePaths.length) {
+    // Widened on purpose: TS narrows away the "local_cleanup" assignment made in the inner try.
+    const step = pipelineStep as string;
+    const serverHasItem = step === "confirmed" || step === "local_cleanup";
+    if (serverHasItem) {
+      // The server confirmed receipt; its record points at these uploads. Never delete them.
+      console.warn("[SYNC] local cleanup failed after server receipt; uploads kept", { clientSubmissionId });
+    } else if (uploadedStoragePaths.length) {
       console.log("[SYNC] rollback: deleting partial uploads", {
         clientSubmissionId,
         count: uploadedStoragePaths.length,
@@ -748,8 +666,10 @@ export async function syncQueuedItem(clientSubmissionId: string) {
       console.log("[SYNC] rollback: no uploads", { clientSubmissionId });
     }
 
-    await updateSubmissionStatus(clientSubmissionId, "failed");
-    await persistLastSubmissionError(clientSubmissionId, message);
+    // If the vault locked mid-send these writes fail; the item stays "syncing" and is reset to
+    // "queued" on the next start. Never let them mask the original error.
+    await updateSubmissionStatus(clientSubmissionId, "failed").catch(() => {});
+    await persistLastSubmissionError(clientSubmissionId, message).catch(() => {});
     throw error;
   } finally {
     inFlightClientSubmissionIds.delete(clientSubmissionId);
@@ -761,25 +681,32 @@ export async function syncQueuedItem(clientSubmissionId: string) {
  * Reset them to "queued" so they are retried — the in-flight Set is cleared on restart.
  */
 async function resetStuckSyncingItems() {
-  const stored = await getStoredReports();
-  const hasStuck = stored.some((r) => r.submissionStatus === "syncing");
-  if (!hasStuck) return;
+  const stored = await readStoredReports();
+  if (!stored.some((r) => r.submissionStatus === "syncing" && !pendingReceipts.has(r.id))) return;
 
-  const next = stored.map((r) =>
-    r.submissionStatus === "syncing" ? { ...r, submissionStatus: "queued" as SubmissionStatus } : r
+  await mutateStoredReports((reports) =>
+    reports.map((r) =>
+      r.submissionStatus === "syncing" && !pendingReceipts.has(r.id)
+        ? { ...r, submissionStatus: "queued" as SubmissionStatus }
+        : r
+    )
   );
-  await saveStoredReports(next);
   console.log("[SYNC] reset stuck syncing items to queued");
 }
 
 export async function syncPendingItems(reason: "startup" | "network_reconnect" | "manual") {
+  if (!isRealSession()) return;
+  await applyPendingServerReceipts();
   if (reason === "startup") {
-    await resetStuckSyncingItems();
+    await resetStuckSyncingItems().catch(() => {});
   }
 
   const reports = await getReports();
   const targets = reports.filter(
-    (r) => r.status === "queued" && (r.submissionStatus === "queued" || r.submissionStatus === "failed")
+    (r) =>
+      r.status === "queued" &&
+      (r.submissionStatus === "queued" || r.submissionStatus === "failed") &&
+      !pendingReceipts.has(r.id)
   );
   console.log("[SYNC] batch start", { reason, count: targets.length });
   for (const item of targets) {

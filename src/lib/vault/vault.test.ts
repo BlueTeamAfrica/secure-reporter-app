@@ -580,3 +580,94 @@ describe("vault", () => {
     );
   });
 });
+
+describe("enterCoverFromReal (panic)", () => {
+  it("zeroes the real key, opens the cover vault, refuses real records; no PIN, no scrypt", async () => {
+    for (const slotBit of [0, 1]) {
+      const s = setup({ slotBit });
+      await s.vault.createVaults(REAL_PIN, COVER_PIN);
+      const liveRealKey = s.random32Live[1]; // the open session holds this exact buffer
+      await s.vault.put("reports", [{ id: "r1" }]);
+      assert.ok(liveRealKey.some((b) => b !== 0));
+      const scryptsBefore = s.scryptSalts.length;
+
+      await s.vault.enterCoverFromReal();
+
+      assert.ok(liveRealKey.every((b) => b === 0), "real key buffer zeroed");
+      assert.equal(s.scryptSalts.length, scryptsBefore, "no key derivation");
+      assert.equal(s.vault.currentKind(), "cover");
+
+      assert.equal(await s.vault.get("notes"), null);
+      await s.vault.put("notes", "after panic");
+      assert.equal(await s.vault.get("notes"), "after panic");
+      for (const name of ["reports", "working", "tombstones", "profile", "coverKey"]) {
+        await rejectsWith(s.vault.get(name as never), "UNKNOWN_RECORD");
+        await rejectsWith(s.vault.put(name as never, "x"), "UNKNOWN_RECORD");
+      }
+      await rejectsWith(s.vault.changePin("cover", null, "9999"), "WRONG_SESSION");
+
+      // Lock: both PINs work as before; data intact on both sides.
+      s.vault.lock();
+      assert.deepEqual(await s.vault.unlock(COVER_PIN), { kind: "cover" });
+      assert.equal(await s.vault.get("notes"), "after panic");
+      s.vault.lock();
+      assert.deepEqual(await s.vault.unlock(REAL_PIN), { kind: "real" });
+      assert.deepEqual(await s.vault.get("reports"), [{ id: "r1" }]);
+
+      // Also from a session opened by unlock(): same result.
+      await s.vault.enterCoverFromReal();
+      assert.equal(s.vault.currentKind(), "cover");
+      assert.equal(await s.vault.get("notes"), "after panic");
+    }
+  });
+
+  it("is refused from a cover session and from a locked vault, leaving the state unchanged", async () => {
+    const s = await created();
+    await rejectsWith(s.vault.enterCoverFromReal(), "LOCKED");
+    assert.equal(s.vault.currentKind(), null);
+
+    await s.vault.unlock(COVER_PIN);
+    await rejectsWith(s.vault.enterCoverFromReal(), "WRONG_SESSION");
+    assert.equal(s.vault.currentKind(), "cover");
+    assert.equal(await s.vault.get("notes"), null, "cover session still usable");
+
+    // A second panic after a successful one is refused the same way.
+    s.vault.lock();
+    await s.vault.unlock(REAL_PIN);
+    await s.vault.enterCoverFromReal();
+    await rejectsWith(s.vault.enterCoverFromReal(), "WRONG_SESSION");
+    assert.equal(s.vault.currentKind(), "cover");
+  });
+
+  it("locks (never stays real) when the stored cover key is unusable", async () => {
+    const s = await created();
+    const realSlot = await realSlotOf(s);
+    const coverSlot: SlotId = realSlot === "a" ? "b" : "a";
+
+    // Cover vault record tampered: the key check fails.
+    const k = recordStorageKey(coverSlot, 0);
+    const original = s.storage.blobs.get(k)!;
+    s.storage.blobs.set(k, flipByte(original, 40));
+    await s.vault.unlock(REAL_PIN);
+    await rejectsWith(s.vault.enterCoverFromReal(), "CORRUPT");
+    assert.equal(s.vault.currentKind(), null);
+    s.storage.blobs.set(k, original);
+
+    // Stored coverKey record tampered.
+    const ck = recordStorageKey(realSlot, 4);
+    s.storage.blobs.set(ck, flipByte(s.storage.blobs.get(ck)!, 40));
+    await s.vault.unlock(REAL_PIN);
+    await rejectsWith(s.vault.enterCoverFromReal(), "CORRUPT");
+    assert.equal(s.vault.currentKind(), null);
+  });
+
+  it("a lock() racing the switch wins: the vault ends locked", async () => {
+    const s = await created();
+    await s.vault.unlock(REAL_PIN);
+    s.storage.jitterMs = 5;
+    const p = s.vault.enterCoverFromReal();
+    s.vault.lock();
+    await rejectsWith(p, "LOCKED");
+    assert.equal(s.vault.currentKind(), null);
+  });
+});

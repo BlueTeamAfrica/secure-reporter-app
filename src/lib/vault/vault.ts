@@ -101,6 +101,7 @@ export type VaultErrorCode =
   | "UNSUPPORTED_FORMAT" // unknown format version or KDF id
   | "CORRUPT" // malformed, tampered, swapped, or unreadable data
   | "DEVICE_SECRET_MISSING"
+  | "KDF_UNAVAILABLE" // native scrypt missing or failed its self-test (no JS fallback on device)
   | "WIPE_INCOMPLETE";
 
 export class VaultError extends Error {
@@ -129,6 +130,13 @@ export interface Vault {
   /** Real session only. "real" needs the old real PIN; "cover" takes null (uses the stored cover key). */
   changePin(kind: "real", oldPin: string, newPin: string): Promise<void>;
   changePin(kind: "cover", oldPin: null, newPin: string): Promise<void>;
+  /**
+   * Panic: real session -> cover session, without a PIN. Reads the stored cover key, checks
+   * that it opens the cover vault, zeroes the real key and opens the cover session. Refused
+   * (WRONG_SESSION / LOCKED, state unchanged) from a cover or locked session. Any failure
+   * after that leaves the vault LOCKED, never in the real session.
+   */
+  enterCoverFromReal(): Promise<void>;
   /** Locks, crypto-shreds the device secret, deletes every vault blob. */
   wipeAll(): Promise<void>;
 }
@@ -151,13 +159,12 @@ const RECORD_MIN_LEN = 1 + NONCE_LEN + TAG_LEN;
 const PAD_BLOCK = 256;
 
 /**
- * Default scrypt cost for new installs: N=2^15, r=8, p=1 (32 MiB).
- * Unlock runs ONE derivation (shared salt), so this costs the same wall time as the earlier
- * two derivations at 2^14, with double the memory hardness. Retune from the on-device
- * speed test. Existing installs keep the parameters in their headers; a change applies to
- * installs set up after it (no migration).
+ * Default scrypt cost for new installs: N=2^16, r=8, p=1 (64 MiB). Decided from on-device
+ * timings of the native (OpenSSL) scrypt; unlock runs ONE derivation (shared salt).
+ * Existing installs keep the parameters in their headers; a change applies only to installs
+ * set up after it (no migration).
  */
-export const DEFAULT_KDF_PARAMS: KdfParams = { logN: 15, r: 8, p: 1 };
+export const DEFAULT_KDF_PARAMS: KdfParams = { logN: 16, r: 8, p: 1 };
 const KDF_BOUNDS = { logN: [10, 18], r: [1, 16], p: [1, 4] } as const;
 
 /**
@@ -671,6 +678,34 @@ export function makeVault(deps: VaultDeps): Vault {
         } finally {
           np.fill(0);
           op?.fill(0);
+        }
+      }),
+
+    enterCoverFromReal: () =>
+      serial(async () => {
+        const s = requireSession();
+        if (s.kind !== "real") throw new VaultError("WRONG_SESSION", "Not available.");
+        let coverKey: Uint8Array | null = null;
+        try {
+          coverKey = await readSessionRecord(s, COVER_KEY_INDEX, REAL_LAYOUT[COVER_KEY_INDEX]);
+          if (coverKey === null || coverKey.length !== KEY_LEN) {
+            throw new VaultError("CORRUPT", "Stored data is inconsistent.");
+          }
+          // Prove the key opens the cover vault before giving up the real session.
+          const coverSlot = otherSlot(s.slot);
+          const raw = await storage.get(recordStorageKey(coverSlot, 0));
+          assertActive(s);
+          if (raw === null) throw new VaultError("CORRUPT", "Stored data is inconsistent.");
+          openRecord(coverKey, coverSlot, COVER_LAYOUT[0], raw)?.fill(0);
+
+          lockInternal(); // zeroes the real key
+          session = { kind: "cover", slot: coverSlot, key: coverKey };
+          coverKey = null; // now owned by the session; lock() zeroes it
+        } catch (e) {
+          lockInternal();
+          throw e;
+        } finally {
+          coverKey?.fill(0);
         }
       }),
 

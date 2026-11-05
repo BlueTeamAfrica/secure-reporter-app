@@ -1,6 +1,16 @@
-let sessionPin: string | null = null;
+/**
+ * Session state. No PIN is ever held here (or anywhere): the vault holds the unlocked
+ * vault's data key in memory, and its presence IS the session. This module only adds the
+ * inactivity clock and the document-picker guard.
+ *
+ * - "real"  : the real vault is open (drafts, queue, profile readable).
+ * - "cover" : the cover vault is open; real data is cryptographically unreachable.
+ * - null    : locked; no data key in memory.
+ */
+import { getVault } from "../lib/vault/expoStorage";
+import type { VaultKind } from "../lib/vault/vault";
+
 let unlockedAt: number | null = null;
-let sessionMode: "real" | "decoy" | null = null;
 
 /** True while system document picker is presented (transient inactive/background). */
 let documentPickerTransientActive = false;
@@ -31,45 +41,62 @@ export function notifyUserInteraction() {
   }
 }
 
-export function setSessionPin(pin: string) {
-  sessionPin = pin;
+/** Call right after a successful vault unlock or createVaults. Starts the inactivity clock. */
+export function markSessionStarted() {
   unlockedAt = Date.now();
-  sessionMode = "real";
 }
 
-export function getSessionPin() {
-  return sessionMode === "real" ? sessionPin : null;
+export function getSessionKind(): VaultKind | null {
+  return getVault().currentKind();
 }
 
-export function clearSessionPin() {
-  sessionPin = null;
-  unlockedAt = null;
-  sessionMode = null;
-  setDocumentPickerTransientActive(false);
-}
-
-export function isSessionUnlocked() {
-  return sessionMode === "real" ? !!sessionPin : sessionMode === "decoy";
+/** The real vault is open. Every read or write of drafts, queue or profile requires this. */
+export function isRealSession() {
+  return getSessionKind() === "real";
 }
 
 export function isDecoySession() {
-  return sessionMode === "decoy";
+  return getSessionKind() === "cover";
 }
 
-export function setDecoySession() {
-  sessionPin = null;
-  unlockedAt = Date.now();
-  sessionMode = "decoy";
+export function isSessionUnlocked() {
+  return getSessionKind() !== null;
+}
+
+/**
+ * Locks: overwrites the in-memory data key (vault.lock()) and stops the clock. Callers that
+ * need to flush the working draft or clean up attachments must do so BEFORE this.
+ */
+export function endSession() {
+  getVault().lock();
+  unlockedAt = null;
+  setDocumentPickerTransientActive(false);
+}
+
+/**
+ * Panic: real session -> cover session without a PIN (vault.enterCoverFromReal). Callers flush
+ * the working draft and clean up attachments BEFORE this, while the real vault is still open.
+ * Throws if refused or failed; on failure the vault is locked, so callers route to /unlock.
+ */
+export async function switchToCoverSession() {
+  try {
+    await getVault().enterCoverFromReal();
+  } catch (e) {
+    endSession();
+    throw e;
+  }
+  markSessionStarted();
+  setDocumentPickerTransientActive(false);
 }
 
 export function hasSessionTimedOut() {
-  if (!sessionMode || !unlockedAt) return true;
-  if (sessionMode === "real" && !sessionPin) return true;
+  if (!isSessionUnlocked() || !unlockedAt) return true;
   return Date.now() - unlockedAt > SESSION_TIMEOUT_MS;
 }
 
+/** Same clock for real and cover sessions, so the two behave identically. */
 export function refreshSession() {
-  if (sessionPin) {
+  if (isSessionUnlocked()) {
     unlockedAt = Date.now();
   }
 }
@@ -80,7 +107,7 @@ export function isDocumentPickerTransientActive() {
 
 /**
  * Marks that the OS document picker is about to cover the app. While true, AppState
- * inactive/background from that UI must not clear the PIN (false-positive lock).
+ * inactive/background from that UI must not lock (false-positive lock).
  */
 export function setDocumentPickerTransientActive(active: boolean) {
   if (documentPickerGuardTimeout) {

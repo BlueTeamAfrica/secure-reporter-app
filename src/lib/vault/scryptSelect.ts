@@ -5,12 +5,16 @@
  * Pure TypeScript, no React Native imports. The vault's headers do not record which
  * implementation was used: both produce byte-identical output, so switching never locks
  * anyone out. The self-test is what guarantees that on each device.
+ *
+ * On device there is NO JS fallback (fallback: null): pure-JS scrypt on Hermes is far too slow
+ * at the vault's cost, so the vault fails with KDF_UNAVAILABLE instead. Tests pass noble.
  */
 import { bytesToHex, utf8ToBytes } from "@noble/ciphers/utils.js";
 
-import type { ScryptFn } from "./vault.ts";
+import { VaultError, type ScryptFn } from "./vault.ts";
 
-export type ScryptChoice = "native" | "noble";
+/** "unavailable": no native scrypt that passed the self-test, and no fallback configured. */
+export type ScryptChoice = "native" | "noble" | "unavailable";
 
 export type ScryptVector = {
   name: string;
@@ -103,8 +107,16 @@ export type ScryptSelector = {
   choice(): Promise<ScryptChoice>;
 };
 
-export function createScryptSelector(opts: { loadNative: () => ScryptFn | null; fallback: ScryptFn }): ScryptSelector {
-  let decision: Promise<{ which: ScryptChoice; fn: ScryptFn }> | null = null;
+const unavailable = (): never => {
+  throw new VaultError("KDF_UNAVAILABLE", "Key derivation is not available on this device.");
+};
+
+export function createScryptSelector(opts: {
+  loadNative: () => ScryptFn | null;
+  /** null on device: no JS fallback. */
+  fallback: ScryptFn | null;
+}): ScryptSelector {
+  let decision: Promise<{ which: ScryptChoice; fn: ScryptFn | null }> | null = null;
 
   const decide = () =>
     (decision ??= (async () => {
@@ -115,18 +127,21 @@ export function createScryptSelector(opts: { loadNative: () => ScryptFn | null; 
         native = null;
       }
       if (native && (await scryptPassesSelfTest(native))) return { which: "native" as const, fn: native };
-      return { which: "noble" as const, fn: opts.fallback };
+      if (opts.fallback) return { which: "noble" as const, fn: opts.fallback };
+      return { which: "unavailable" as const, fn: null };
     })());
 
   const scrypt: ScryptFn = async (pw, salt, o) => {
     const d = await decide();
-    if (d.which === "native") {
+    if (d.which === "native" && d.fn) {
       try {
         return await d.fn(pw, salt, o);
       } catch {
-        // Self-test proved identical output, so the fallback yields the same key, only slower.
+        // Self-test proved identical output, so a fallback (tests only) yields the same key.
+        if (!opts.fallback) unavailable();
       }
     }
+    if (!opts.fallback) return unavailable();
     return opts.fallback(pw, salt, o);
   };
 

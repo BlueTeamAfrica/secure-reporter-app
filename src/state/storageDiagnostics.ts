@@ -2,37 +2,34 @@
  * TEST-PHASE DIAGNOSTIC: review before wider release.
  *
  * Read-only counts of what is stored on this device, so a phone can be diagnosed remotely
- * without clearing data. It never returns titles, bodies, file names, PINs or hashes, and it
- * makes no writes and deletes nothing. It needs a real (non-cover) unlocked session.
+ * without clearing data. It never returns titles, bodies, file names, PINs or keys, and it
+ * makes no writes and deletes nothing. It needs an open real vault.
+ *
+ * The vault encrypts each record (reports, tombstones, working) as a whole, so a record is
+ * either readable or not; there is no per-item "failed to decrypt" any more.
  */
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
-import { decryptDraftText, encryptDraftText } from "../lib/crypto/drafts";
-import { getSessionPin } from "./session";
+
+import { getVault } from "../lib/vault/expoStorage";
+import { isRealSession } from "./session";
 import { getReports, type PurgeTombstone } from "./drafts";
 import { getWorkingReport } from "./editorDraft";
-import { PURGE_TOMBSTONES_KEY, REPORTS_KEY, WORKING_REPORT_KEY } from "./storageKeys";
-
-type CipherState = "ok" | "empty" | "failed";
 
 export type StorageDiagnostics = {
   reports: {
-    /** false when draft_reports exists but is not a readable JSON list. */
+    /** false when the reports record exists but can't be read or isn't a list. */
     listReadable: boolean;
     stored: number;
     visibleToApp: number;
     hiddenTombstoned: number;
-    hiddenDecryptFailed: number;
     hiddenEmptyTitleOrBody: number;
     hiddenUnknownShape: number;
     /** stored − visible − hidden counts above; should be 0. */
     unexplained: number;
     /** Visible to the app, but neither Home list shows this status combination. */
     notShownOnHome: number;
-    /** Visible records whose attachment list failed to decrypt (they show no attachments). */
-    attachmentListDecryptFailed: number;
   };
-  /** All stored records, raw values as stored (before any read-time migration). */
+  /** All stored records, raw values as stored. */
   statusCounts: { status: string; submissionStatus: string; count: number }[];
   tombstones: {
     listReadable: boolean;
@@ -42,7 +39,7 @@ export type StorageDiagnostics = {
   workingDraft: {
     exists: boolean;
     /** "n/a" when no working draft is stored. */
-    decrypts: "ok" | "empty" | "failed" | "n/a";
+    readable: "ok" | "empty" | "failed" | "n/a";
   };
   attachmentFiles: {
     inFolder: number;
@@ -54,35 +51,20 @@ export type StorageDiagnostics = {
 
 const ATTACHMENTS_DIR_NAME = "secure_reporter_attachments/";
 
-function classifyCipher(cipher: string, pin: string, emptyCipher: string): CipherState {
-  // Today's scheme uses a fixed IV per PIN, so an encrypted empty string always produces the
-  // same ciphertext. That tells "empty" apart from "failed to decrypt" exactly. Revisit when
-  // the storage format changes.
-  if (cipher === emptyCipher) return "empty";
+type RecordName = "reports" | "tombstones" | "working";
+
+async function readRecord(name: RecordName): Promise<{ readable: boolean; value: unknown }> {
   try {
-    return decryptDraftText(cipher, pin) ? "ok" : "failed";
+    return { readable: true, value: await getVault().get(name) };
   } catch {
-    return "failed";
+    return { readable: false, value: null };
   }
 }
 
-function attachmentListDecrypts(cipher: string, pin: string): boolean {
-  try {
-    return Array.isArray(JSON.parse(decryptDraftText(cipher, pin)));
-  } catch {
-    return false;
-  }
-}
-
-async function readJsonList(key: string): Promise<{ readable: boolean; items: unknown[] }> {
-  const raw = await AsyncStorage.getItem(key);
-  if (raw === null) return { readable: true, items: [] };
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? { readable: true, items: parsed } : { readable: false, items: [] };
-  } catch {
-    return { readable: false, items: [] };
-  }
+function readList(r: { readable: boolean; value: unknown }): { readable: boolean; items: unknown[] } {
+  if (!r.readable) return { readable: false, items: [] };
+  if (r.value === null) return { readable: true, items: [] };
+  return Array.isArray(r.value) ? { readable: true, items: r.value } : { readable: false, items: [] };
 }
 
 function str(v: unknown): v is string {
@@ -102,15 +84,12 @@ function shownOnHome(status: string, submissionStatus: string): boolean {
   return active || outbox;
 }
 
-/** Returns null when there is no real unlocked session (locked or cover session). */
+/** Returns null when there is no open real vault (locked or cover session). */
 export async function getStorageDiagnostics(): Promise<StorageDiagnostics | null> {
-  const pin = getSessionPin();
-  if (!pin) return null;
-
-  const emptyCipher = encryptDraftText("", pin);
+  if (!isRealSession()) return null;
 
   // Tombstones
-  const tombList = await readJsonList(PURGE_TOMBSTONES_KEY);
+  const tombList = readList(await readRecord("tombstones"));
   const tombstones = tombList.items.filter(
     (t): t is PurgeTombstone => !!t && typeof t === "object" && str((t as PurgeTombstone).clientSubmissionId)
   );
@@ -124,12 +103,10 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics | null
     }));
 
   // Stored reports, classified the same way getReports() decides what it can show.
-  const reportList = await readJsonList(REPORTS_KEY);
+  const reportList = readList(await readRecord("reports"));
   let hiddenTombstoned = 0;
-  let hiddenDecryptFailed = 0;
   let hiddenEmptyTitleOrBody = 0;
   let hiddenUnknownShape = 0;
-  let attachmentListDecryptFailed = 0;
   const statusMap = new Map<string, { status: string; submissionStatus: string; count: number }>();
 
   for (const item of reportList.items) {
@@ -146,49 +123,31 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics | null
       hiddenTombstoned += 1;
       continue;
     }
-    if (str(r.text)) continue; // legacy plain-text record: shown
-    if (str(r.encryptedText)) {
-      const s = classifyCipher(r.encryptedText, pin, emptyCipher);
-      if (s === "failed") hiddenDecryptFailed += 1;
-      else if (s === "empty") hiddenEmptyTitleOrBody += 1;
+    if (!str(r.id) || !str(r.title) || !str(r.body)) {
+      hiddenUnknownShape += 1;
       continue;
     }
-    if (str(r.encryptedTitle) && str(r.encryptedBody)) {
-      const t = classifyCipher(r.encryptedTitle, pin, emptyCipher);
-      const b = classifyCipher(r.encryptedBody, pin, emptyCipher);
-      if (t === "failed" || b === "failed") hiddenDecryptFailed += 1;
-      else if (t === "empty" || b === "empty") hiddenEmptyTitleOrBody += 1;
-      else if (str(r.encryptedAttachments) && !attachmentListDecrypts(r.encryptedAttachments, pin)) {
-        attachmentListDecryptFailed += 1;
-      }
-      continue;
-    }
-    hiddenUnknownShape += 1;
+    if (!r.title || !r.body) hiddenEmptyTitleOrBody += 1;
   }
 
   const visible = await getReports();
   const stored = reportList.items.length;
-  const unexplained =
-    stored - visible.length - hiddenTombstoned - hiddenDecryptFailed - hiddenEmptyTitleOrBody - hiddenUnknownShape;
+  const unexplained = stored - visible.length - hiddenTombstoned - hiddenEmptyTitleOrBody - hiddenUnknownShape;
   const notShownOnHome = visible.filter((r) => !shownOnHome(r.status, r.submissionStatus)).length;
 
   // Working draft
-  const workingRaw = await AsyncStorage.getItem(WORKING_REPORT_KEY);
-  let workingDecrypts: StorageDiagnostics["workingDraft"]["decrypts"] = "n/a";
-  if (workingRaw !== null) {
-    try {
-      const w = JSON.parse(workingRaw) as Record<string, unknown>;
-      if (!str(w.encryptedTitle) || !str(w.encryptedBody)) {
-        workingDecrypts = "failed";
-      } else {
-        const t = classifyCipher(w.encryptedTitle, pin, emptyCipher);
-        const b = classifyCipher(w.encryptedBody, pin, emptyCipher);
-        workingDecrypts =
-          t === "failed" || b === "failed" ? "failed" : t === "empty" && b === "empty" ? "empty" : "ok";
-      }
-    } catch {
-      workingDecrypts = "failed";
-    }
+  const workingRecord = await readRecord("working");
+  let workingReadable: StorageDiagnostics["workingDraft"]["readable"] = "n/a";
+  const workingExists = !workingRecord.readable || workingRecord.value !== null;
+  if (!workingRecord.readable) {
+    workingReadable = "failed";
+  } else if (workingRecord.value !== null) {
+    const w = workingRecord.value as Record<string, unknown>;
+    const empty =
+      (!str(w?.title) || w.title === "") &&
+      (!str(w?.body) || w.body === "") &&
+      (!Array.isArray(w?.attachments) || w.attachments.length === 0);
+    workingReadable = empty ? "empty" : "ok";
   }
 
   // Attachment files
@@ -226,16 +185,14 @@ export async function getStorageDiagnostics(): Promise<StorageDiagnostics | null
       stored,
       visibleToApp: visible.length,
       hiddenTombstoned,
-      hiddenDecryptFailed,
       hiddenEmptyTitleOrBody,
       hiddenUnknownShape,
       unexplained,
       notShownOnHome,
-      attachmentListDecryptFailed,
     },
     statusCounts: [...statusMap.values()].sort((a, b) => b.count - a.count),
     tombstones: { listReadable: tombList.readable, count: tombstones.length, newest },
-    workingDraft: { exists: workingRaw !== null, decrypts: workingDecrypts },
+    workingDraft: { exists: workingExists, readable: workingReadable },
     attachmentFiles: {
       inFolder,
       inFolderReferenced,

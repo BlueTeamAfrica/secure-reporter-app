@@ -3,7 +3,7 @@ import { DraftAttachment } from "./types";
 import { sanitizeFileName } from "./fileNames";
 import { getWorkingReport, hasStoredWorkingReport } from "../../state/editorDraft";
 import { countStoredActionableReports, getReports } from "../../state/drafts";
-import { getSessionPin } from "../../state/session";
+import { isRealSession } from "../../state/session";
 
 function attachmentsRootDir() {
   const base = FileSystem.documentDirectory;
@@ -45,7 +45,7 @@ export async function deleteAttachmentsFiles(attachments: DraftAttachment[]) {
   await Promise.all(attachments.map((a) => deleteLocalAttachmentFile(a.localUri)));
 }
 
-/** Wipes all imported attachment bytes (e.g. device reset). Does not require the session PIN. */
+/** Wipes all imported attachment bytes (device reset, legacy wipe). Does not need the vault. */
 export async function deleteAllImportedAttachments() {
   const base = FileSystem.documentDirectory;
   if (!base) return;
@@ -61,11 +61,11 @@ export async function deleteAllImportedAttachments() {
  * Never deletes queued items or drafts; only deletes unattached bytes.
  *
  * Fails closed: a file is deleted only when every stored item was read successfully and
- * none of them references it. Without a real unlocked session (locked, unlock screen,
- * cover session) references can't be read, so nothing is deleted.
+ * none of them references it. Without an open real vault (locked, unlock screen, cover
+ * session) references can't be read, so nothing is deleted. Must run BEFORE vault.lock().
  */
 export async function cleanupOrphanImportedAttachments() {
-  if (!getSessionPin()) return;
+  if (!isRealSession()) return;
 
   const base = FileSystem.documentDirectory;
   if (!base) return;
@@ -78,7 +78,8 @@ export async function cleanupOrphanImportedAttachments() {
 
   try {
     const reports = await getReports();
-    // getReports() silently drops records it can't decrypt. If any were dropped, their
+    // getReports() returns [] if the list can't be read and drops records it won't show.
+    // countStoredActionableReports() throws on a read failure. Either way a dropped record's
     // files would look orphaned, so skip cleanup entirely.
     if ((await countStoredActionableReports()) !== reports.length) {
       console.warn("[ATTACHMENT] cleanup skipped: some stored items could not be read");
