@@ -14,13 +14,15 @@ import { logSupabaseEnvOnce } from "../src/lib/env/supabaseEnv";
 import { isDeviceConfigured } from "../src/state/device";
 import {
   SESSION_TIMEOUT_MS,
-  clearSessionPin,
+  endSession,
   hasSessionTimedOut,
   isDocumentPickerTransientActive,
   isDecoySession,
+  isRealSession,
   isSessionUnlocked,
   notifyUserInteraction,
   setOnUserInteractionHook,
+  switchToCoverSession,
 } from "../src/state/session";
 import {
   clearRuntimeWorkingReportSnapshot,
@@ -34,13 +36,29 @@ SplashScreen.preventAutoHideAsync();
 
 logSupabaseEnvOnce();
 
+/**
+ * Lock and unlock paths (threat-model note, Phase 2a):
+ * - Locked: no data key in memory. Only the PIN screen is reachable.
+ * - Real session: the real data key is in memory; every real screen is reachable.
+ * - Cover session: only the cover key is in memory; real records are cryptographically
+ *   unreachable, and routing keeps the session on /cover.
+ * - Lock (background, inactivity): shield -> /unlock -> flush working draft -> attachment
+ *   cleanup -> vault lock. Never /cover: a lock always asks for a code.
+ * - Panic (real session): shield -> flush -> cleanup -> switch to the cover session without a
+ *   PIN (the real vault stores the cover key; the real key is zeroed) -> /cover. If the switch
+ *   fails, the vault is locked and the PIN screen is shown instead.
+ */
 function isPublicPath(pathname: string) {
-  return (
-    pathname === "/" ||
-    pathname === "/setup" ||
-    pathname === "/unlock" ||
-    pathname === "/cover"
-  );
+  return pathname === "/" || pathname === "/setup" || pathname === "/unlock";
+}
+
+/** Where the current session may not be: null if the path is allowed. */
+async function redirectFor(pathname: string): Promise<"/" | "/unlock" | "/cover" | null> {
+  if (isPublicPath(pathname)) return null;
+  if (!(await isDeviceConfigured())) return "/";
+  if (!isSessionUnlocked() || hasSessionTimedOut()) return "/unlock";
+  if (isDecoySession() && pathname !== "/cover") return "/cover";
+  return null;
 }
 
 export default function RootLayout() {
@@ -56,7 +74,7 @@ export default function RootLayout() {
   const pathname = usePathname();
   const [appState, setAppState] = useState(AppState.currentState);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lockNowRef = useRef<(reason: "background" | "inactivity" | "panic") => Promise<void>>(
+  const lockNowRef = useRef<(reason: "background" | "inactivity") => Promise<void>>(
     async () => {}
   );
 
@@ -84,29 +102,61 @@ export default function RootLayout() {
     notifyUserInteraction();
   }, [scheduleInactivityLock]);
 
-  const lockNow = useCallback(async (reason: "background" | "inactivity" | "panic") => {
-    // Show cover and panic shield immediately for fast visual response.
-    setPanicShield(true);
-    try {
-      router.replace("/cover");
-    } catch {
-      // ignore
-    }
-
-    // Flush any active editor autosave before clearing the PIN.
+  /** Flush + cleanup while the real vault is still open. Both no-ops outside a real session. */
+  const saveBeforeClosingRealSession = useCallback(async () => {
     await flushRuntimeWorkingReportSnapshotToStorage();
     clearRuntimeWorkingReportSnapshot();
-
-    // Cleanup orphaned attachment files while the PIN is still in memory.
-    // Must run before clearSessionPin — the cleanup needs the PIN to build the referenced-file set.
+    // Needs the open vault to read the referenced-file set; skips itself if it can't.
     await cleanupOrphanImportedAttachments().catch(() => {});
-
-    // Clear the in-memory session PIN.
-    clearSessionPin();
-
-    console.log("[lock] complete", { reason });
-    setTimeout(() => setPanicShield(false), 350);
   }, []);
+
+  const lockNow = useCallback(
+    async (reason: "background" | "inactivity") => {
+      // Shield and PIN screen first, for an instant visual response.
+      setPanicShield(true);
+      try {
+        router.replace("/unlock");
+      } catch {
+        // ignore
+      }
+      try {
+        await saveBeforeClosingRealSession();
+      } finally {
+        endSession(); // vault.lock(): overwrites the in-memory data key
+        console.log("[lock] complete", { reason });
+        setTimeout(() => setPanicShield(false), 350);
+      }
+    },
+    [saveBeforeClosingRealSession]
+  );
+
+  const panicNow = useCallback(async () => {
+    setPanicShield(true);
+    try {
+      if (isDecoySession()) {
+        router.replace("/cover");
+        return;
+      }
+      if (!isRealSession()) {
+        endSession();
+        router.replace("/unlock");
+        return;
+      }
+      try {
+        await saveBeforeClosingRealSession();
+        await switchToCoverSession(); // zeroes the real key; locks on failure
+        router.replace("/cover");
+        console.log("[panic] complete");
+      } catch {
+        endSession();
+        router.replace("/unlock");
+        console.log("[panic] fell back to lock");
+      }
+    } finally {
+      scheduleInactivityLock();
+      setTimeout(() => setPanicShield(false), 350);
+    }
+  }, [saveBeforeClosingRealSession, scheduleInactivityLock]);
 
   useEffect(() => {
     lockNowRef.current = lockNow;
@@ -114,23 +164,14 @@ export default function RootLayout() {
 
   useEffect(() => {
     async function checkRouteAccess() {
-      const configured = await isDeviceConfigured();
-      if (!configured) return;
-      if (isPublicPath(pathname)) return;
-
-      if (isDecoySession()) {
-        router.replace("/cover");
-        return;
-      }
-
-      if (!isSessionUnlocked() || hasSessionTimedOut()) {
-        clearSessionPin();
-        router.replace("/unlock");
-      }
+      const target = await redirectFor(pathname);
+      if (!target) return;
+      if (target === "/unlock") endSession();
+      router.replace(target);
     }
 
-    checkRouteAccess();
-  }, [pathname, lockNow]);
+    void checkRouteAccess();
+  }, [pathname]);
 
   useEffect(() => {
     if (fontsLoaded) {
@@ -159,13 +200,11 @@ export default function RootLayout() {
       }
 
       if (nextState === "active") {
-        if (!isPublicPath(pathname) && isDecoySession()) {
-          router.replace("/cover");
-          return;
-        }
-        if (!isPublicPath(pathname) && (!isSessionUnlocked() || hasSessionTimedOut())) {
-          clearSessionPin();
-          router.replace("/unlock");
+        const target = await redirectFor(pathname);
+        if (target) {
+          if (target === "/unlock") endSession();
+          router.replace(target);
+          if (target !== "/cover") return;
         }
         scheduleInactivityLock();
       }
@@ -191,10 +230,11 @@ export default function RootLayout() {
   }, [scheduleInactivityLock]);
 
   const showPrivacyShield = appState === "inactive" || appState === "background";
-  const showPanicTriggerZone = !isPublicPath(pathname);
+  // Real screens only: on /cover the panic has nowhere further to go.
+  const showPanicTriggerZone = !isPublicPath(pathname) && pathname !== "/cover";
 
-  async function handlePanicMode() {
-    await lockNow("panic");
+  function handlePanicMode() {
+    void panicNow();
   }
 
   function registerHeaderTap() {
@@ -204,7 +244,7 @@ export default function RootLayout() {
     tapTimes.push(now);
     if (tapTimes.length >= 3) {
       tapTimes.length = 0;
-      void handlePanicMode();
+      handlePanicMode();
     }
   }
 
@@ -227,7 +267,6 @@ export default function RootLayout() {
         <Stack.Screen name="report/success" />
         <Stack.Screen name="receipts" />
         <Stack.Screen name="settings" />
-        <Stack.Screen name="settings/backup-code" />
       </Stack>
 
       {showPanicTriggerZone ? (
@@ -244,7 +283,7 @@ export default function RootLayout() {
         >
           <Pressable
             onPress={registerHeaderTap}
-            onLongPress={() => void handlePanicMode()}
+            onLongPress={handlePanicMode}
             delayLongPress={2000}
             android_disableSound
             style={{ width: 220, height: 72 }}

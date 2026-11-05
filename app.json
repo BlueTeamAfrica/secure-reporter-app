@@ -21,7 +21,8 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.blueteamafrica.securereporterapp"
+      "package": "com.blueteamafrica.securereporterapp",
+      "allowBackup": false
     },
     "web": {
       "output": "static",

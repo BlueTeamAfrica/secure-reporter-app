@@ -1,5 +1,4 @@
 import { View, Text, Pressable, ScrollView } from "react-native";
-import { router } from "expo-router";
 import { colors } from "../src/theme/colors";
 import { poppins } from "../src/theme/fonts";
 
@@ -33,24 +32,23 @@ const card = {
   borderColor: colors.border,
 };
 
+/**
+ * Cover session home. Reached only by typing the second code at /unlock. No hidden way out:
+ * leaving the cover session means locking (background or inactivity) and typing a code again.
+ */
 export default function CoverScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background, padding: 24 }}>
-      <Pressable
-        onLongPress={() => router.replace("/unlock")}
-        delayLongPress={3000}
+      <Text
+        style={{
+          color: colors.text,
+          fontSize: 28,
+          marginBottom: 20,
+          ...poppins("700"),
+        }}
       >
-        <Text
-          style={{
-            color: colors.text,
-            fontSize: 28,
-            marginBottom: 20,
-            ...poppins("700"),
-          }}
-        >
-          Notes
-        </Text>
-      </Pressable>
+        Notes
+      </Text>
 
       <Pressable
         style={{

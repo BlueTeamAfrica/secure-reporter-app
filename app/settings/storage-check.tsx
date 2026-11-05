@@ -5,9 +5,10 @@
  * diagnosed remotely without clearing data. Shows no titles, bodies, file names, PINs or hashes.
  * Makes no writes and deletes nothing.
  *
- * Reachable by a 3 s hold on the Settings title and, in test builds only, by the visible
- * "Diagnostics" row in Settings. The root layout redirects locked sessions to /unlock and cover
- * sessions to /cover; this screen also refuses to load counts without a real session PIN.
+ * Test builds only: reachable from the "Diagnostics" row in Settings and a 3 s hold on the
+ * Settings title (both gated on IS_TEST_BUILD). The root layout redirects locked sessions to
+ * /unlock and cover sessions to /cover; this screen also refuses to load counts without an
+ * open real vault.
  *
  * Test builds also get a speed test: a JS-vs-native self-test on fixed vectors, and scrypt
  * timings (JS and native) with random dummy PINs and salts. It touches no storage, no vault,
@@ -29,7 +30,8 @@ import { getVaultScryptChoice } from "../../src/lib/vault/expoStorage";
 import { isNativeScryptAvailable, nativeVaultScrypt } from "../../src/lib/vault/nativeScrypt";
 import { compareImplementations, type ScryptChoice } from "../../src/lib/vault/scryptSelect";
 import { defaultScrypt } from "../../src/lib/vault/vault";
-import { getSessionPin } from "../../src/state/session";
+import { isRealSession } from "../../src/state/session";
+import { getLastUnlockDurationMs } from "../../src/state/device";
 import { getStorageDiagnostics, type StorageDiagnostics } from "../../src/state/storageDiagnostics";
 import { colors } from "../../src/theme/colors";
 import { poppins } from "../../src/theme/fonts";
@@ -46,15 +48,13 @@ const STRINGS = {
   no: "no",
   sectionReports: "Reports",
   listReadable: "List readable",
-  stored: "Stored in draft_reports",
+  stored: "Stored items",
   visible: "Visible to the app",
   hiddenTombstoned: "Hidden: tombstoned",
-  hiddenDecryptFailed: "Hidden: failed to decrypt",
   hiddenEmpty: "Hidden: empty title or body",
   hiddenUnknown: "Hidden: unknown shape",
   unexplained: "Unexplained difference",
   notShownOnHome: "Visible but not on Home (status)",
-  attachmentListFailed: "Attachment list failed to decrypt",
   sectionStatus: "Status × submission (all stored)",
   none: "None",
   sectionTombstones: "Tombstones",
@@ -62,7 +62,7 @@ const STRINGS = {
   newestTombstones: "Newest 5 (confirmed at · server id …last 4)",
   sectionWorking: "Working draft",
   workingExists: "Exists",
-  workingDecrypts: "Decrypts",
+  workingReadable: "Readable",
   sectionFiles: "Attachment files",
   filesInFolder: "Files in folder",
   filesReferenced: "Referenced by readable items",
@@ -78,7 +78,9 @@ const STRINGS = {
   nativeAvailable: "Native module",
   inUse: "Key derivation in use",
   inUseNative: "native",
-  inUseJs: "JS (fallback)",
+  inUseUnavailable: "unavailable (can't set up or unlock)",
+  inUseJs: "JS",
+  lastUnlock: "Last unlock took",
   selfTitle: "Self-test (fixed vectors, JS vs native)",
   selfMatch: "Outputs match",
   selfRun: "Run self-test",
@@ -161,6 +163,7 @@ function SpeedTest() {
   const cancelled = useRef(false);
   const engine = useRef(describeJsEngine()).current;
   const nativeAvailable = useRef(isNativeScryptAvailable()).current;
+  const lastUnlockMs = useRef(getLastUnlockDurationMs()).current;
 
   useEffect(() => {
     cancelled.current = false;
@@ -221,7 +224,19 @@ function SpeedTest() {
       <Row label={STRINGS.nativeAvailable} value={yesNo(nativeAvailable)} />
       <Row
         label={STRINGS.inUse}
-        value={choice === null ? STRINGS.speedPending : choice === "native" ? STRINGS.inUseNative : STRINGS.inUseJs}
+        value={
+          choice === null
+            ? STRINGS.speedPending
+            : choice === "native"
+              ? STRINGS.inUseNative
+              : choice === "unavailable"
+                ? STRINGS.inUseUnavailable
+                : STRINGS.inUseJs
+        }
+      />
+      <Row
+        label={STRINGS.lastUnlock}
+        value={lastUnlockMs === null ? STRINGS.speedPending : `${(lastUnlockMs / 1000).toFixed(2)} s`}
       />
 
       <SubTitle>{STRINGS.selfTitle}</SubTitle>
@@ -259,7 +274,8 @@ export default function StorageCheckScreen() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   const load = useCallback(async () => {
-    if (!getSessionPin()) {
+    // Also blocks a deep link to this route in production builds.
+    if (!IS_TEST_BUILD || !isRealSession()) {
       setState({ kind: "unavailable" });
       return;
     }
@@ -312,15 +328,10 @@ export default function StorageCheckScreen() {
               <Row label={STRINGS.stored} value={state.data.reports.stored} />
               <Row label={STRINGS.visible} value={state.data.reports.visibleToApp} />
               <Row label={STRINGS.hiddenTombstoned} value={state.data.reports.hiddenTombstoned} />
-              <Row label={STRINGS.hiddenDecryptFailed} value={state.data.reports.hiddenDecryptFailed} />
               <Row label={STRINGS.hiddenEmpty} value={state.data.reports.hiddenEmptyTitleOrBody} />
               <Row label={STRINGS.hiddenUnknown} value={state.data.reports.hiddenUnknownShape} />
               <Row label={STRINGS.unexplained} value={state.data.reports.unexplained} />
               <Row label={STRINGS.notShownOnHome} value={state.data.reports.notShownOnHome} />
-              <Row
-                label={STRINGS.attachmentListFailed}
-                value={state.data.reports.attachmentListDecryptFailed}
-              />
             </Section>
 
             <Section title={STRINGS.sectionStatus}>
@@ -350,7 +361,7 @@ export default function StorageCheckScreen() {
 
             <Section title={STRINGS.sectionWorking}>
               <Row label={STRINGS.workingExists} value={yesNo(state.data.workingDraft.exists)} />
-              <Row label={STRINGS.workingDecrypts} value={state.data.workingDraft.decrypts} />
+              <Row label={STRINGS.workingReadable} value={state.data.workingDraft.readable} />
             </Section>
 
             <Section title={STRINGS.sectionFiles}>

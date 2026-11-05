@@ -37,10 +37,10 @@ export default function SettingsScreen() {
         >
           <Text style={{ color: colors.accent, fontSize: 16, ...poppins("600") }}>← Back</Text>
         </Pressable>
-        {/* Hidden: 3 s hold on the title opens the read-only Storage check (test-phase).
-            Kept alongside the visible test-build "Diagnostics" row below, for now. */}
+        {/* Test builds only: 3 s hold on the title opens the Storage check (also reachable
+            from the visible "Diagnostics" row). No hidden gestures in production builds. */}
         <Pressable
-          onLongPress={() => router.push("/settings/storage-check")}
+          onLongPress={IS_TEST_BUILD ? () => router.push("/settings/storage-check") : undefined}
           delayLongPress={3000}
           android_disableSound
           style={{ alignSelf: "flex-start" }}
@@ -137,16 +137,11 @@ export default function SettingsScreen() {
           </Pressable>
         ) : null}
 
-        <Pressable
-          onLongPress={() => router.push("/settings/backup-code")}
-          delayLongPress={3000}
-          android_disableSound
-          style={{ marginTop: 18, paddingVertical: 10 }}
-        >
+        <View style={{ marginTop: 18, paddingVertical: 10 }}>
           <Text style={{ color: colors.textMuted, fontSize: 12, ...poppins("400") }}>
             Version {version}
           </Text>
-        </Pressable>
+        </View>
       </ScrollView>
     </Screen>
   );

@@ -3,6 +3,7 @@ import { Text } from "react-native";
 import { Redirect } from "expo-router";
 import Screen from "../src/components/layout/Screen";
 import { isDeviceConfigured } from "../src/state/device";
+import { ensureLegacyDataWiped } from "../src/state/legacyWipe";
 import { colors } from "../src/theme/colors";
 import { poppins } from "../src/theme/fonts";
 
@@ -12,7 +13,9 @@ export default function IndexScreen() {
 
   useEffect(() => {
     async function load() {
-      const value = await isDeviceConfigured();
+      // Silent one-time wipe of data from versions before the vault, BEFORE setup routing.
+      await ensureLegacyDataWiped();
+      const value = await isDeviceConfigured().catch(() => false);
       setConfigured(value);
       setLoading(false);
     }
