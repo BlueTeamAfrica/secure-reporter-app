@@ -1,15 +1,23 @@
-import { Text, Pressable, ScrollView, Switch, View } from "react-native";
+import { I18nManager, Text, Pressable, ScrollView, Switch, View } from "react-native";
 import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useEffect, useState } from "react";
 import Screen from "../../src/components/layout/Screen";
 import { IS_TEST_BUILD } from "../../src/lib/env/testBuild";
 import { getRandomizeKeypadEnabled, setRandomizeKeypad } from "../../src/state/device";
+import { getStoredLanguage, switchLanguageAndReload } from "../../src/state/language";
+import { otherLanguage, type Language } from "../../src/state/languagePlan";
+import { isSessionUnlocked } from "../../src/state/session";
 import { colors } from "../../src/theme/colors";
 import { poppins } from "../../src/theme/fonts";
 
+const LANGUAGE_NAMES: Record<Language, string> = { en: "English", ar: "Arabic" };
+
 export default function SettingsScreen() {
   const [randomizeKeypad, setRandomizeKeypadState] = useState(false);
+  const [storedLanguage, setStoredLanguage] = useState<Language | null>(null);
+  const [languageBusy, setLanguageBusy] = useState(false);
+  const [languageFailed, setLanguageFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -18,10 +26,36 @@ export default function SettingsScreen() {
         if (!cancelled) setRandomizeKeypadState(v);
       })
       .catch(() => {});
+    if (IS_TEST_BUILD) {
+      getStoredLanguage()
+        .then((v) => {
+          if (!cancelled) setStoredLanguage(v);
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const nextLanguage = otherLanguage(storedLanguage ?? (I18nManager.isRTL ? "ar" : "en"));
+
+  async function onSwitchLanguage() {
+    if (languageBusy) return;
+    setLanguageBusy(true);
+    setLanguageFailed(false);
+    try {
+      await switchLanguageAndReload(nextLanguage);
+    } catch {
+      // The data key may already be gone, and then the only safe screen is the PIN screen.
+      if (!isSessionUnlocked()) {
+        router.replace("/unlock");
+        return;
+      }
+      setLanguageBusy(false);
+      setLanguageFailed(true);
+    }
+  }
 
   const version =
     (Constants.expoConfig && Constants.expoConfig.version) ||
@@ -133,6 +167,32 @@ export default function SettingsScreen() {
             </Text>
             <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
               Storage counts and speed test. Test builds only.
+            </Text>
+          </Pressable>
+        ) : null}
+
+        {IS_TEST_BUILD ? (
+          <Pressable
+            onPress={() => void onSwitchLanguage()}
+            disabled={languageBusy}
+            style={{
+              backgroundColor: colors.surface,
+              padding: 18,
+              borderRadius: 14,
+              marginBottom: 12,
+              borderWidth: 1,
+              borderColor: colors.border,
+            }}
+          >
+            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
+              Switch to {LANGUAGE_NAMES[nextLanguage]}
+            </Text>
+            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
+              {languageFailed
+                ? "Could not switch. Try again."
+                : `Saved: ${storedLanguage ? LANGUAGE_NAMES[storedLanguage] : "not set"}. Layout: ${
+                    I18nManager.isRTL ? "RTL" : "LTR"
+                  }. The app reloads. Test builds only.`}
             </Text>
           </Pressable>
         ) : null}
