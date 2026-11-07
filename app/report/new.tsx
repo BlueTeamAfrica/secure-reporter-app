@@ -13,6 +13,7 @@ import {
 import { ReportStatus, getReportById, saveReport, updateReport, updateReportStatus } from "../../src/state/drafts";
 import { hasReporterProfileComplete } from "../../src/state/reporterProfile";
 import { isEmptyWorkingDraft } from "../../src/state/workingDraftPlan";
+import { canSend } from "../../src/state/itemRules";
 import { t } from "../../src/i18n";
 import { pickAttachments } from "../../src/lib/attachments/picker";
 import { importPickedFileToSandbox, deleteLocalAttachmentFile } from "../../src/lib/attachments/persistLocal";
@@ -208,8 +209,8 @@ export default function NewReportScreen() {
       // But don't create empty records.
       if (!hasAny) return null;
 
-      // Safety: prevent "ready/queued" with empty body (text submission requires body).
-      if ((nextStatus === "ready" || nextStatus === "queued") && !body.trim()) {
+      // Sending needs body text or a file (itemRules.canSend); the title is optional.
+      if ((nextStatus === "ready" || nextStatus === "queued") && !canSend({ title, body, attachments })) {
         return null;
       }
 
@@ -421,7 +422,7 @@ export default function NewReportScreen() {
       <Pressable
         onPress={async () => {
           if (saving || workflowStatus === "queued") return;
-          if (!body.trim()) {
+          if (!canSend({ title, body, attachments })) {
             setSaveBanner(e.needsText);
             setTimeout(() => setSaveBanner(""), 1800);
             return;

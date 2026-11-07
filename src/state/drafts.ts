@@ -4,6 +4,7 @@ import { uploadEncryptedSubmission } from "../lib/submissions";
 import { getReporterMetadataForSubmission } from "./reporterProfile";
 import { clearWorkingReportIfFor } from "./editorDraft";
 import type { DraftAttachment, SubmittedAttachment } from "../lib/attachments/types";
+import { canSend, isSendTarget, toVisibleItem } from "./itemRules";
 import { deleteAttachmentsFiles } from "../lib/attachments/persistLocal";
 import {
   deleteStoragePaths,
@@ -184,26 +185,9 @@ export async function countStoredActionableReports(): Promise<number> {
   return stored.filter((r) => !tombstonedIds.has(r?.id ?? "")).length;
 }
 
-/** Normalises a stored record; null when the app would not show it (same rules as before). */
+/** Every well-formed record is shown (itemRules.toVisibleItem): nothing is hidden. */
 function toReportRecord(report: StoredReportRecord): ReportRecord | null {
-  if (!report || typeof report.id !== "string") return null;
-  if (typeof report.title !== "string" || typeof report.body !== "string") return null;
-  if (!report.title || !report.body) return null;
-  const status: ReportStatus = report.status ?? "draft";
-  const raw = report.submissionStatus ?? "not_submitted";
-  const submissionStatus: SubmissionStatus = status === "queued" && raw === "not_submitted" ? "queued" : raw;
-  return {
-    id: report.id,
-    title: report.title,
-    body: report.body,
-    status,
-    submissionStatus,
-    createdAt: report.createdAt,
-    updatedAt: report.updatedAt ?? report.createdAt,
-    lastSubmissionAttemptAt: report.lastSubmissionAttemptAt ?? null,
-    attachments: Array.isArray(report.attachments) ? report.attachments : [],
-    lastSubmissionError: report.lastSubmissionError ?? null,
-  };
+  return toVisibleItem<DraftAttachment>(report);
 }
 
 /** Empty when locked, in a cover session, or when the stored list can't be read. */
@@ -511,7 +495,16 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     return { status: "syncing" as const };
   }
   inFlightClientSubmissionIds.add(clientSubmissionId);
+  // Everything after the mark is inside this try, so the mark is always cleared (also when the
+  // item is not found or can't be sent).
+  try {
+    return await syncMarkedItem(clientSubmissionId);
+  } finally {
+    inFlightClientSubmissionIds.delete(clientSubmissionId);
+  }
+}
 
+async function syncMarkedItem(clientSubmissionId: string) {
   const reports = await getReports();
   const report = reports.find((item) => item.id === clientSubmissionId);
 
@@ -523,8 +516,8 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     throw new Error("Only pending items can be synced");
   }
 
-  if (!report.body?.trim()) {
-    throw new Error("Report text is required");
+  if (!canSend(report)) {
+    throw new Error("Nothing to send: needs text or a file");
   }
 
   const submissionSecret = getSubmissionPayloadSecret();
@@ -671,8 +664,6 @@ export async function syncQueuedItem(clientSubmissionId: string) {
     await updateSubmissionStatus(clientSubmissionId, "failed").catch(() => {});
     await persistLastSubmissionError(clientSubmissionId, message).catch(() => {});
     throw error;
-  } finally {
-    inFlightClientSubmissionIds.delete(clientSubmissionId);
   }
 }
 
@@ -702,12 +693,8 @@ export async function syncPendingItems(reason: "startup" | "network_reconnect" |
   }
 
   const reports = await getReports();
-  const targets = reports.filter(
-    (r) =>
-      r.status === "queued" &&
-      (r.submissionStatus === "queued" || r.submissionStatus === "failed") &&
-      !pendingReceipts.has(r.id)
-  );
+  const pendingIds = new Set(pendingReceipts.keys());
+  const targets = reports.filter((r) => isSendTarget(r, pendingIds));
   console.log("[SYNC] batch start", { reason, count: targets.length });
   for (const item of targets) {
     try {
