@@ -1,6 +1,8 @@
 import { Alert, Text, Pressable, ScrollView, Switch, View } from "react-native";
 import { router, type Href } from "expo-router";
+import * as Application from "expo-application";
 import Constants from "expo-constants";
+import { versionLabel } from "../../src/ui/versionLabel";
 import { useEffect, useState } from "react";
 import Screen from "../../src/components/layout/Screen";
 import { IS_TEST_BUILD } from "../../src/lib/env/testBuild";
@@ -59,10 +61,11 @@ export default function SettingsScreen() {
     };
   }, []);
 
-  const version =
-    (Constants.expoConfig && Constants.expoConfig.version) ||
-    (((Constants as any).manifest?.version as string | undefined) ?? "") ||
-    "1.0.0";
+  // "1.0.0 (versionCode)": the build number tells test builds apart on the phone.
+  const version = versionLabel(
+    Application.nativeApplicationVersion ?? Constants.expoConfig?.version,
+    Application.nativeBuildVersion
+  );
 
   const next = otherLanguage(LANGUAGE);
   const nextName = next === "ar" ? t().language.arabic : t().language.english;

@@ -32,3 +32,29 @@ describe("build config guards", () => {
     assert.equal(config.plugins, undefined, "development keeps console output");
   });
 });
+
+describe("build profiles and label", () => {
+  const eas = JSON.parse(readFileSync(path("eas.json"), "utf8"));
+
+  it("remote version source; preview and reporter auto-increment and build APKs", () => {
+    assert.equal(eas.cli.appVersionSource, "remote");
+    for (const name of ["preview", "reporter"]) {
+      assert.equal(eas.build[name].autoIncrement, true, name);
+      assert.equal(eas.build[name].android.buildType, "apk", name);
+      assert.equal(eas.build[name].environment, "production", name);
+    }
+  });
+
+  it("only the test profile sets the test-build flag", () => {
+    assert.equal(eas.build.preview.env.EXPO_PUBLIC_TEST_BUILD, "1");
+    assert.equal(eas.build.reporter.env?.EXPO_PUBLIC_TEST_BUILD, undefined);
+    assert.equal(eas.build.production.env?.EXPO_PUBLIC_TEST_BUILD, undefined);
+  });
+
+  it("Settings shows 1.0.0 (versionCode)", async () => {
+    const { versionLabel } = await import("./ui/versionLabel.ts");
+    assert.equal(versionLabel("1.0.0", "12"), "1.0.0 (12)");
+    assert.equal(versionLabel("1.0.0", null), "1.0.0");
+    assert.equal(versionLabel(null, "3"), "1.0.0 (3)");
+  });
+});

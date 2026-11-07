@@ -20,7 +20,7 @@
  * Removed with this screen before the reporter's APK.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import { router } from "expo-router";
 import { getRandomBytes } from "expo-crypto";
 import Screen from "../../src/components/layout/Screen";
@@ -36,6 +36,7 @@ import { isNativeScryptAvailable, nativeVaultScrypt } from "../../src/lib/vault/
 import { compareImplementations, type ScryptChoice } from "../../src/lib/vault/scryptSelect";
 import { defaultScrypt } from "../../src/lib/vault/vault";
 import { simulateInterruptedErase } from "../../src/diagnostics/simulateInterruptedErase";
+import { setScreenshotBlocking } from "../../src/diagnostics/screenCaptureToggle";
 import { endSession, isRealSession } from "../../src/state/session";
 import { getLastUnlockDurationMs } from "../../src/state/device";
 import { getStorageDiagnostics, type StorageDiagnostics } from "../../src/state/storageDiagnostics";
@@ -43,6 +44,11 @@ import { colors } from "../../src/theme/colors";
 import { poppins } from "../../src/theme/fonts";
 
 const STRINGS = {
+  sectionCapture: "Screenshot blocking",
+  captureIntro:
+    "On: screenshots are blocked and the recent-apps preview is blank. Not saved; off again after the app restarts. The reporter's build has it always on.",
+  captureLabel: "Block screenshots",
+  captureFailed: "Could not change screenshot blocking.",
   sectionBreak: "Recovery test",
   breakIntro:
     "Leaves the state of an erase that stopped after its first step. Then the code screen can only offer Erase everything.",
@@ -140,6 +146,33 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 type Busy = null | "selftest" | "noble" | "native";
+
+/** Test builds only: turns screenshot blocking on or off to check the recent-apps preview. */
+function ScreenshotBlockingSwitch() {
+  const [on, setOn] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function change(next: boolean) {
+    setFailed(false);
+    try {
+      await setScreenshotBlocking(next, IS_TEST_BUILD);
+      setOn(next);
+    } catch {
+      setFailed(true);
+    }
+  }
+
+  return (
+    <Section title={STRINGS.sectionCapture}>
+      <Text style={{ color: colors.textMuted, fontSize: 13, lineHeight: 19, ...poppins("400") }}>{STRINGS.captureIntro}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+        <Text style={{ color: colors.text, fontSize: 15, ...poppins("600") }}>{STRINGS.captureLabel}</Text>
+        <Switch value={on} onValueChange={(v) => void change(v)} />
+      </View>
+      {failed ? <Text style={{ color: colors.error, marginTop: 8, ...poppins("500") }}>{STRINGS.captureFailed}</Text> : null}
+    </Section>
+  );
+}
 
 /** Test builds only: breaks the data on purpose, after a confirmation. */
 function SimulateInterruptedErase() {
@@ -438,6 +471,7 @@ export default function StorageCheckScreen() {
         {IS_TEST_BUILD ? (
           <View style={{ marginTop: 18 }}>
             <SpeedTest />
+            <ScreenshotBlockingSwitch />
             <SimulateInterruptedErase />
           </View>
         ) : null}

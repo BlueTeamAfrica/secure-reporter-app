@@ -1,10 +1,22 @@
 {
+  "cli": {
+    "appVersionSource": "remote"
+  },
   "build": {
     "preview": {
       "environment": "production",
       "env": {
         "EXPO_PUBLIC_TEST_BUILD": "1"
       },
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "reporter": {
+      "environment": "production",
+      "distribution": "internal",
+      "autoIncrement": true,
       "android": {
         "buildType": "apk"
       }
