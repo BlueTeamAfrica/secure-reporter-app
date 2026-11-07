@@ -98,6 +98,8 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | لم يعد أحد الملفات موجوداً على الهاتف. أزله أو أضفه من جديد ثم أرسل. | A file is no longer on this phone. Remove it or add it again, then send. |
 | تعذّرت قراءة الملف: {fileName}. أزله أو أضفه من جديد ثم أرسل. | A file could not be read: {fileName}. Remove it or add it again, then send. |
 | تعذّرت قراءة أحد الملفات. أزله أو أضفه من جديد ثم أرسل. | A file could not be read. Remove it or add it again, then send. |
+| هذا الملف أكبر من أن يُرسل: {fileName}. أزله ثم أرسل من جديد. | This file is too large to send: {fileName}. Remove it, then send again. |
+| أحد الملفات أكبر من أن يُرسل. أزله ثم أرسل من جديد. | A file is too large to send. Remove it, then send again. |
 | تعذّر الإرسال. ستُعاد المحاولة. | Could not send. It will be tried again. |
 
 ## Writing screen
@@ -114,13 +116,22 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | لم تُضف ملفات. | No files added. |
 | إزالة | Remove |
 | ملف | FILE |
+| صورة | Photo |
+| ملف PDF | PDF |
+| مستند | Document |
+| نص | Text |
+| صوت | Audio |
+| ملف | File |
+| {size} كيلوبايت | {size} KB |
+| {size} ميغابايت | {size} MB |
+| لا يمكن إضافة ملفات أكبر من {limit} ميغابايت. لم يُضف: {files} | Files larger than {limit} MB can't be added. Not added: {files} |
 | تعذّرت إضافة الملفات المختارة. | Could not add the selected file(s). |
 | حفظ كمسودة | Save draft |
 | تعذّر الحفظ. حاول مرة أخرى. | Could not save. Try again. |
 | إرسال | Send |
 | جارٍ التحضير… | Preparing… |
 | تعذّر التحضير للإرسال. حاول مرة أخرى. | Could not prepare to send. Try again. |
-| اكتب شيئاً قبل الإرسال. | Write something before sending. |
+| اكتب نصاً أو أضف ملفاً قبل الإرسال. العنوان وحده لا يُرسل. | Write some text or add a file before sending. A title alone is not sent. |
 | أضف اسمك أولاً | Add your name first |
 | يُرسل اسمك مع كل مادة. | Your name is sent with each entry. |
 | إضافة الاسم | Add name |
