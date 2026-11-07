@@ -6,7 +6,8 @@ import {
   Poppins_700Bold,
 } from "@expo-google-fonts/poppins";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, View, Text, Pressable, Keyboard } from "react-native";
+import { AppState, View, Text, Pressable, Keyboard, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Stack, router, usePathname } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { usePreventScreenCapture } from "expo-screen-capture";
@@ -29,6 +30,9 @@ import {
   flushRuntimeWorkingReportSnapshotToStorage,
 } from "../src/state/editorDraft";
 import { cleanupOrphanImportedAttachments } from "../src/lib/attachments/persistLocal";
+import NotesButton from "../src/components/NotesButton";
+import { t } from "../src/i18n";
+import { bandLayout } from "../src/ui/topBand";
 import { colors } from "../src/theme/colors";
 import { poppins } from "../src/theme/fonts";
 
@@ -72,6 +76,8 @@ export default function RootLayout() {
   });
 
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const { width: screenWidth } = useWindowDimensions();
   const [appState, setAppState] = useState(AppState.currentState);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lockNowRef = useRef<(reason: "background" | "inactivity") => Promise<void>>(
@@ -232,9 +238,18 @@ export default function RootLayout() {
   const showPrivacyShield = appState === "inactive" || appState === "background";
   // Real screens only: on /cover the panic has nowhere further to go.
   const showPanicTriggerZone = !isPublicPath(pathname) && pathname !== "/cover";
+  // Top band (Phase 2b items 3-4): the Notes button and the gesture zone, and nothing else.
+  // Screens render below it, so no screen control can sit under the zone.
+  const band = bandLayout(screenWidth, insets.top);
 
   function handlePanicMode() {
     void panicNow();
+  }
+
+  /** Visible Notes button: the same panic path as the gesture (panicNow saves the draft first). */
+  function handleNotesButton() {
+    Keyboard.dismiss();
+    handlePanicMode();
   }
 
   function registerHeaderTap() {
@@ -253,7 +268,8 @@ export default function RootLayout() {
   }
 
   return (
-    <View style={{ flex: 1 }} onTouchStart={onUserInteraction}>
+    <View style={{ flex: 1, backgroundColor: colors.background }} onTouchStart={onUserInteraction}>
+      <View style={{ flex: 1, paddingTop: showPanicTriggerZone ? band.height : 0 }}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="setup" />
@@ -268,6 +284,7 @@ export default function RootLayout() {
         <Stack.Screen name="receipts" />
         <Stack.Screen name="settings" />
       </Stack>
+      </View>
 
       {showPanicTriggerZone ? (
         <View
@@ -277,16 +294,27 @@ export default function RootLayout() {
             top: 0,
             left: 0,
             right: 0,
-            height: 72,
-            alignItems: "center",
+            height: band.height,
+            backgroundColor: colors.background,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border,
           }}
         >
+          <View style={{ position: "absolute", top: band.button.top, start: band.button.start }}>
+            <NotesButton onPress={handleNotesButton} />
+          </View>
           <Pressable
             onPress={registerHeaderTap}
             onLongPress={handlePanicMode}
             delayLongPress={2000}
             android_disableSound
-            style={{ width: 220, height: 72 }}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: band.zone.left,
+              width: band.zone.width,
+              height: band.zone.height,
+            }}
           >
             <View style={{ flex: 1, backgroundColor: "transparent" }} />
           </Pressable>
@@ -315,7 +343,7 @@ export default function RootLayout() {
               ...poppins("600"),
             }}
           >
-            Protected
+            {t().common.appName}
           </Text>
         </View>
       ) : null}
