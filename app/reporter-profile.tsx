@@ -57,7 +57,7 @@ export default function ReporterProfileScreen() {
     try {
       await saveReporterProfile({ reporterName: trimmed, reporterRegion: "", reporterPhone: "", reporterAlias: "" });
       if (fromSettings) router.back();
-      else router.replace("/home");
+      else router.replace("/guide"); // first run: the guide comes once, after the name
     } catch {
       setError(t().common.genericError);
     } finally {
