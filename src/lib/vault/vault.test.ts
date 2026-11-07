@@ -671,3 +671,73 @@ describe("enterCoverFromReal (panic)", () => {
     assert.equal(s.vault.currentKind(), null);
   });
 });
+
+describe("checkPin (Settings checks inside an open session)", () => {
+  it("answers for the real and the cover PIN without confusing them", async () => {
+    const { vault } = await created();
+    await vault.unlock(REAL_PIN);
+    assert.equal(await vault.checkPin("real", REAL_PIN), true);
+    assert.equal(await vault.checkPin("cover", COVER_PIN), true);
+    assert.equal(await vault.checkPin("real", COVER_PIN), false, "cover PIN is not the real PIN");
+    assert.equal(await vault.checkPin("cover", REAL_PIN), false, "real PIN is not the cover PIN");
+    assert.equal(await vault.checkPin("real", "0000"), false);
+    assert.equal(await vault.checkPin("real", toArabicIndic(REAL_PIN)), true, "digit scripts are equivalent");
+    await rejectsWith(vault.checkPin("real", "12"), "INVALID_PIN");
+  });
+
+  it("leaves the current session untouched after right, wrong and malformed PINs", async () => {
+    const { vault } = await created();
+    await vault.unlock(REAL_PIN);
+    await vault.put("profile", { reporterName: "A" });
+    for (const pin of [REAL_PIN, COVER_PIN, "0000"]) {
+      await vault.checkPin("real", pin);
+      await vault.checkPin("cover", pin);
+    }
+    await rejectsWith(vault.checkPin("real", "x"), "INVALID_PIN");
+    assert.equal(vault.currentKind(), "real");
+    assert.deepEqual(await vault.get("profile"), { reporterName: "A" }, "same key still open");
+  });
+
+  it("is refused outside a real session, and leaves that state unchanged", async () => {
+    const { vault } = await created();
+    await rejectsWith(vault.checkPin("real", REAL_PIN), "LOCKED");
+    assert.equal(vault.currentKind(), null);
+    await vault.unlock(COVER_PIN);
+    await rejectsWith(vault.checkPin("cover", COVER_PIN), "WRONG_SESSION");
+    assert.equal(vault.currentKind(), "cover");
+  });
+
+  it("clears the stretched PIN after every check, and runs exactly one scrypt", async () => {
+    const storage = new MemoryStorage();
+    const live: Uint8Array[] = [];
+    const scrypt: ScryptFn = (pw, salt, o) =>
+      scryptAsync(pw, salt, o).then((out) => {
+        live.push(out);
+        return out;
+      });
+    const vault = makeVault({ storage, randomBytes: (n) => new Uint8Array(nodeRandomBytes(n)), scrypt, kdfParams: FAST_KDF });
+    await vault.createVaults(REAL_PIN, COVER_PIN);
+    for (const [kind, pin] of [
+      ["real", REAL_PIN],
+      ["real", "0000"],
+      ["cover", COVER_PIN],
+      ["cover", REAL_PIN],
+    ] as const) {
+      const before = live.length;
+      await vault.checkPin(kind, pin);
+      assert.equal(live.length, before + 1, "one scrypt per check");
+      assert.ok(live[before].every((b) => b === 0), `stretched PIN zeroed (${kind})`);
+    }
+    await rejectsWith(vault.checkPin("real", "12"), "INVALID_PIN");
+    assert.equal(live.length, 6, "a malformed PIN derives nothing");
+  });
+
+  it("a lock() during the check wins: LOCKED, and no session reappears", async () => {
+    const { vault } = await created();
+    await vault.unlock(REAL_PIN);
+    const pending = vault.checkPin("real", REAL_PIN);
+    vault.lock();
+    await rejectsWith(pending, "LOCKED");
+    assert.equal(vault.currentKind(), null);
+  });
+});

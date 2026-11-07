@@ -9,15 +9,12 @@ import * as SecureStore from "expo-secure-store";
 import { deleteAllImportedAttachments } from "../lib/attachments/persistLocal";
 import { getVault, getVaultScryptChoice } from "../lib/vault/expoStorage";
 import { VaultError, type VaultKind } from "../lib/vault/vault";
+import { afterFailedAttempt } from "./lockoutPolicy";
+import { guardedPinAttempt, type PinAttemptResult } from "./pinAttempts";
 import { endSession, markSessionStarted } from "./session";
 
 const DEVICE_FAILED_ATTEMPTS_KEY = "device_failed_attempts";
 const DEVICE_LOCKOUT_UNTIL_KEY = "device_lockout_until";
-
-const SOFT_DELAY_AFTER_ATTEMPTS = 3;
-const SOFT_DELAY_MS = 10 * 1000;
-const HARD_COOLDOWN_AFTER_ATTEMPTS = 5;
-const HARD_COOLDOWN_MS = 60 * 1000;
 
 const RANDOMIZE_KEYPAD_KEY = "randomize_keypad";
 
@@ -84,28 +81,25 @@ export async function resetFailedAttempts() {
 }
 
 export async function recordFailedAttempt() {
-  const current = await getFailedAttempts();
-  const next = current + 1;
-
-  // Threat hardening: progressive cooldowns without revealing extra modes.
-  // - After 3 wrong attempts: 10s delay
-  // - After 5 wrong attempts: 60s cooldown and reset counter
-  if (next >= HARD_COOLDOWN_AFTER_ATTEMPTS) {
-    const lockoutUntil = Date.now() + HARD_COOLDOWN_MS;
-    await SecureStore.setItemAsync(DEVICE_FAILED_ATTEMPTS_KEY, "0");
-    await SecureStore.setItemAsync(DEVICE_LOCKOUT_UNTIL_KEY, String(lockoutUntil));
-    return { failedAttempts: 0, locked: true, lockoutUntil };
+  // Threat hardening: progressive cooldowns without revealing extra modes (lockoutPolicy.ts).
+  const result = afterFailedAttempt(await getFailedAttempts(), Date.now());
+  await SecureStore.setItemAsync(DEVICE_FAILED_ATTEMPTS_KEY, String(result.failedAttempts));
+  if (result.lockoutUntil !== null) {
+    await SecureStore.setItemAsync(DEVICE_LOCKOUT_UNTIL_KEY, String(result.lockoutUntil));
   }
+  return result;
+}
 
-  if (next >= SOFT_DELAY_AFTER_ATTEMPTS) {
-    const lockoutUntil = Date.now() + SOFT_DELAY_MS;
-    await SecureStore.setItemAsync(DEVICE_FAILED_ATTEMPTS_KEY, String(next));
-    await SecureStore.setItemAsync(DEVICE_LOCKOUT_UNTIL_KEY, String(lockoutUntil));
-    return { failedAttempts: next, locked: true, lockoutUntil };
-  }
-
-  await SecureStore.setItemAsync(DEVICE_FAILED_ATTEMPTS_KEY, String(next));
-  return { failedAttempts: next, locked: false, lockoutUntil: null };
+/**
+ * Checks a PIN inside the open real session (Settings). Uses the same lockout counters as the
+ * PIN screen; never changes the session. See pinAttempts.ts.
+ */
+export async function checkPinInSession(kind: VaultKind, pin: string): Promise<PinAttemptResult> {
+  await requireKeyDerivation();
+  return guardedPinAttempt(
+    { getLockoutUntil, recordFailedAttempt, resetFailedAttempts },
+    () => getVault().checkPin(kind, pin),
+  );
 }
 
 export async function setRandomizeKeypad(enabled: boolean) {

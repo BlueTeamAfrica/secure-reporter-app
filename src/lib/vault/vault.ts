@@ -127,6 +127,12 @@ export interface Vault {
   /** Read-modify-write inside the write queue, so concurrent updates never lose data. */
   update<T>(name: RecordName, fn: (current: T | null) => T): Promise<T>;
   remove(name: RecordName): Promise<void>;
+  /**
+   * Real session only. True iff `pin` is the current PIN of that kind. Read-only: never changes
+   * the session (a wrong or other-kind PIN does not lock), and zeroes the stretched PIN and any
+   * unwrapped key. One scrypt. Callers count wrong answers toward the lockout.
+   */
+  checkPin(kind: VaultKind, pin: string): Promise<boolean>;
   /** Real session only. "real" needs the old real PIN; "cover" takes null (uses the stored cover key). */
   changePin(kind: "real", oldPin: string, newPin: string): Promise<void>;
   changePin(kind: "cover", oldPin: null, newPin: string): Promise<void>;
@@ -619,6 +625,34 @@ export function makeVault(deps: VaultDeps): Vault {
         const s = requireSession();
         // Overwrite with an encrypted "absent" marker: the set of stored keys never changes.
         await writeSessionRecord(s, recordIndex(s.kind, name), name, null);
+      }),
+
+    checkPin: (kind, pin) =>
+      serial(async () => {
+        const s = requireSession();
+        if (s.kind !== "real") throw new VaultError("WRONG_SESSION", "Not available.");
+        if (kind !== "real" && kind !== "cover") throw new VaultError("INVALID_ARGUMENT", "Unknown kind.");
+        const p = normalizePin(pin);
+        let stretched: Uint8Array | null = null;
+        let deviceSecret: Uint8Array | null = null;
+        try {
+          const headers = await loadHeaders();
+          deviceSecret = await loadDeviceSecret();
+          stretched = await stretch(p, headers.shared.salt, headers.shared.params);
+          assertActive(s);
+          const slot = kind === "real" ? s.slot : otherSlot(s.slot);
+          const hit = tryUnwrap(headers[slot], slot, stretched, deviceSecret);
+          if (!hit) return false;
+          try {
+            return hit.kind === kind && (kind !== "real" || equalBytes(hit.key, s.key));
+          } finally {
+            hit.key.fill(0);
+          }
+        } finally {
+          p.fill(0);
+          stretched?.fill(0);
+          deviceSecret?.fill(0);
+        }
       }),
 
     changePin: (kind: VaultKind, oldPin: string | null, newPin: string) =>
