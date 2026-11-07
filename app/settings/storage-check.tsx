@@ -13,9 +13,14 @@
  * Test builds also get a speed test: a JS-vs-native self-test on fixed vectors, and scrypt
  * timings (JS and native) with random dummy PINs and salts. It touches no storage, no vault,
  * no device secret and no session.
+ *
+ * Test builds also get "Simulate interrupted erase" (src/diagnostics/): after a confirmation it
+ * deletes the device secret, which breaks this phone's data for good, so the recovery erase
+ * on the PIN screen can be tested. The only Diagnostics action that changes anything.
+ * Removed with this screen before the reporter's APK.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { router } from "expo-router";
 import { getRandomBytes } from "expo-crypto";
 import Screen from "../../src/components/layout/Screen";
@@ -26,17 +31,27 @@ import {
   runKdfBenchmark,
   type BenchmarkResult,
 } from "../../src/lib/vault/kdfBenchmark";
-import { getVaultScryptChoice } from "../../src/lib/vault/expoStorage";
+import { expoVaultStorage, getVaultScryptChoice } from "../../src/lib/vault/expoStorage";
 import { isNativeScryptAvailable, nativeVaultScrypt } from "../../src/lib/vault/nativeScrypt";
 import { compareImplementations, type ScryptChoice } from "../../src/lib/vault/scryptSelect";
 import { defaultScrypt } from "../../src/lib/vault/vault";
-import { isRealSession } from "../../src/state/session";
+import { simulateInterruptedErase } from "../../src/diagnostics/simulateInterruptedErase";
+import { endSession, isRealSession } from "../../src/state/session";
 import { getLastUnlockDurationMs } from "../../src/state/device";
 import { getStorageDiagnostics, type StorageDiagnostics } from "../../src/state/storageDiagnostics";
 import { colors } from "../../src/theme/colors";
 import { poppins } from "../../src/theme/fonts";
 
 const STRINGS = {
+  sectionBreak: "Recovery test",
+  breakIntro:
+    "Leaves the state of an erase that stopped after its first step. Then the code screen can only offer Erase everything.",
+  breakButton: "Simulate interrupted erase",
+  breakConfirmTitle: "Break this app's data?",
+  breakConfirmBody:
+    "This deletes the key that opens everything stored in this app on this phone. Drafts, items waiting to send and notes become unreadable for good. Only Erase everything will work afterwards.",
+  breakConfirmAction: "Break the data",
+  breakFailed: "Could not run the simulation.",
   back: "← Back",
   title: "Storage check",
   intro: "Counts only. Nothing is changed or deleted.",
@@ -125,6 +140,44 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 type Busy = null | "selftest" | "noble" | "native";
+
+/** Test builds only: breaks the data on purpose, after a confirmation. */
+function SimulateInterruptedErase() {
+  const [failed, setFailed] = useState(false);
+
+  async function run() {
+    setFailed(false);
+    try {
+      endSession(); // as the erase does first
+      await simulateInterruptedErase(expoVaultStorage, IS_TEST_BUILD);
+      router.replace("/unlock");
+    } catch {
+      setFailed(true);
+    }
+  }
+
+  function confirm() {
+    Alert.alert(STRINGS.breakConfirmTitle, STRINGS.breakConfirmBody, [
+      { text: "Cancel", style: "cancel" },
+      { text: STRINGS.breakConfirmAction, style: "destructive", onPress: () => void run() },
+    ]);
+  }
+
+  return (
+    <Section title={STRINGS.sectionBreak}>
+      <Text style={{ color: colors.textMuted, fontSize: 13, lineHeight: 19, ...poppins("400") }}>{STRINGS.breakIntro}</Text>
+      <Pressable
+        onPress={confirm}
+        style={{ backgroundColor: colors.error, paddingVertical: 12, borderRadius: 12, marginTop: 10 }}
+      >
+        <Text style={{ color: colors.onAccent, textAlign: "center", fontSize: 15, ...poppins("600") }}>
+          {STRINGS.breakButton}
+        </Text>
+      </Pressable>
+      {failed ? <Text style={{ color: colors.error, marginTop: 8, ...poppins("500") }}>{STRINGS.breakFailed}</Text> : null}
+    </Section>
+  );
+}
 
 function ActionButton({ label, busy, onPress }: { label: string; busy: boolean; onPress: () => void }) {
   return (
@@ -385,6 +438,7 @@ export default function StorageCheckScreen() {
         {IS_TEST_BUILD ? (
           <View style={{ marginTop: 18 }}>
             <SpeedTest />
+            <SimulateInterruptedErase />
           </View>
         ) : null}
       </ScrollView>
