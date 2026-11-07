@@ -6,16 +6,20 @@ import {
   clearRuntimeWorkingReportSnapshot,
   clearWorkingReport,
   getWorkingReport,
+  saveRuntimeSnapshotOnExit,
   saveWorkingReport,
   setRuntimeWorkingReportSnapshot,
 } from "../../src/state/editorDraft";
-import { ReportStatus, getReportById, saveReport, updateReport } from "../../src/state/drafts";
+import { ReportStatus, getReportById, saveReport, updateReport, updateReportStatus } from "../../src/state/drafts";
+import { hasReporterProfileComplete } from "../../src/state/reporterProfile";
+import { isEmptyWorkingDraft } from "../../src/state/workingDraftPlan";
+import { t } from "../../src/i18n";
 import { pickAttachments } from "../../src/lib/attachments/picker";
 import { importPickedFileToSandbox, deleteLocalAttachmentFile } from "../../src/lib/attachments/persistLocal";
 import type { DraftAttachment } from "../../src/lib/attachments/types";
 import { notifyUserInteraction } from "../../src/state/session";
 import { colors } from "../../src/theme/colors";
-import { poppins } from "../../src/theme/fonts";
+import { poppins, lh } from "../../src/theme/fonts";
 
 function newAttachmentId() {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 11)}`;
@@ -43,10 +47,17 @@ export default function NewReportScreen() {
   });
   const [hydrated, setHydrated] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [saving, setSaving] = useState<null | "save" | "ready" | "queued">(null);
+  const [saving, setSaving] = useState<null | "save" | "send">(null);
   const [saveBanner, setSaveBanner] = useState("");
   const initializedRef = useRef(false);
   const lastActivityPingRef = useRef(0);
+  /**
+   * Set when the editor is left on purpose after an explicit save or send (the working draft
+   * was already cleared). Stops the snapshot from being re-set by later renders, and the exit
+   * save from bringing the cleared draft back as "Continue writing".
+   */
+  const leavingSavedRef = useRef(false);
+  const e = t().editor;
 
   useEffect(() => {
     async function hydrate() {
@@ -96,7 +107,7 @@ export default function NewReportScreen() {
   }, [id, initialTitle, initialBody, resume]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || leavingSavedRef.current) return;
 
     setRuntimeWorkingReportSnapshot({
       reportId: reportId ?? undefined,
@@ -106,8 +117,8 @@ export default function NewReportScreen() {
     });
 
     const timer = setTimeout(() => {
-      if (!title.trim() && !body.trim() && attachments.length === 0) return;
-      if (saving) return;
+      if (isEmptyWorkingDraft({ title, body, attachments })) return;
+      if (saving || leavingSavedRef.current) return;
 
       saveWorkingReport({
         reportId: reportId ?? undefined,
@@ -120,9 +131,11 @@ export default function NewReportScreen() {
     return () => clearTimeout(timer);
   }, [reportId, title, body, attachments, hydrated, saving]);
 
+  // Leaving the editor saves what was typed (D4); an empty editor creates nothing.
   useEffect(() => {
     return () => {
-      clearRuntimeWorkingReportSnapshot();
+      if (leavingSavedRef.current) clearRuntimeWorkingReportSnapshot();
+      else void saveRuntimeSnapshotOnExit();
     };
   }, []);
 
@@ -168,7 +181,7 @@ export default function NewReportScreen() {
       }
 
       if (!next.length) {
-        Alert.alert("Attachments", "Could not import the selected file(s).");
+        Alert.alert(t().editor.files, t().editor.addFileFailed);
         return;
       }
 
@@ -220,7 +233,7 @@ export default function NewReportScreen() {
       keyboardShouldPersistTaps="handled"
     >
       <Text style={{ color: colors.text, fontSize: 24, marginBottom: 16, ...poppins("700") }}>
-        {id ? "Edit Note" : "New Note"}
+        {id ? e.titleEdit : e.titleNew}
       </Text>
 
       <TextInput
@@ -233,7 +246,7 @@ export default function NewReportScreen() {
           }
           setTitle(t);
         }}
-        placeholder="Title"
+        placeholder={e.titlePlaceholder}
         placeholderTextColor={colors.textMuted}
         style={{
           ...fieldStyle,
@@ -251,12 +264,13 @@ export default function NewReportScreen() {
           }
           setBody(t);
         }}
-        placeholder="Write something..."
+        placeholder={e.bodyPlaceholder}
         placeholderTextColor={colors.textMuted}
         multiline
         style={{
           ...fieldStyle,
           minHeight: 220,
+          lineHeight: lh(22),
           textAlignVertical: "top",
           marginBottom: 16,
         }}
@@ -271,7 +285,7 @@ export default function NewReportScreen() {
         }}
       >
         <Text style={{ color: colors.textMuted, fontSize: 13, ...poppins("600") }}>
-          Attachments
+          {e.files}
         </Text>
         <Pressable
           onPress={onAddAttachment}
@@ -287,14 +301,14 @@ export default function NewReportScreen() {
           }}
         >
           <Text style={{ color: colors.text, fontSize: 13, ...poppins("600") }}>
-            {picking ? "Opening…" : "Add attachment"}
+            {picking ? e.opening : e.addFile}
           </Text>
         </Pressable>
       </View>
 
       {attachments.length === 0 ? (
         <Text style={{ color: colors.textMuted, fontSize: 13, marginBottom: 20, ...poppins("400") }}>
-          No files attached.
+          {e.noFiles}
         </Text>
       ) : (
         <View style={{ marginBottom: 20 }}>
@@ -330,7 +344,7 @@ export default function NewReportScreen() {
                     justifyContent: "center",
                   }}
                 >
-                  <Text style={{ color: colors.textMuted, fontSize: 11, ...poppins("600") }}>FILE</Text>
+                  <Text style={{ color: colors.textMuted, fontSize: 11, ...poppins("600") }}>{e.fileBadge}</Text>
                 </View>
               )}
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -349,7 +363,7 @@ export default function NewReportScreen() {
                 onPress={() => onRemoveAttachment(item.id)}
                 style={{ padding: 8 }}
               >
-                <Text style={{ color: colors.error, fontSize: 13, ...poppins("600") }}>Remove</Text>
+                <Text style={{ color: colors.error, fontSize: 13, ...poppins("600") }}>{e.remove}</Text>
               </Pressable>
             </View>
           ))}
@@ -368,47 +382,21 @@ export default function NewReportScreen() {
         onPress={async () => {
           if (saving) return;
           setSaving("save");
+          leavingSavedRef.current = true;
           try {
             const result = await persist("draft");
-            if (!result) return;
+            if (!result) {
+              leavingSavedRef.current = false;
+              return;
+            }
             setWorkflowStatus("draft");
             await clearWorkingReport().catch(() => {});
             clearRuntimeWorkingReportSnapshot();
             router.replace("/home");
           } catch {
-            setSaveBanner("Save failed");
-            setTimeout(() => setSaveBanner(""), 1400);
-          } finally {
-            setSaving(null);
-          }
-        }}
-        style={{
-          backgroundColor: colors.accent,
-          padding: 16,
-          borderRadius: 14,
-          marginBottom: 10,
-          opacity: saving ? 0.7 : 1,
-        }}
-      >
-        <Text style={{ color: colors.onAccent, textAlign: "center", ...poppins("600") }}>
-          {saving === "save" ? "Saving…" : "Save"}
-        </Text>
-      </Pressable>
-
-      <Pressable
-        onPress={async () => {
-          if (saving) return;
-          setSaving("ready");
-          try {
-            const result = await persist("ready");
-            if (!result) return;
-            setWorkflowStatus("ready");
-            await clearWorkingReport().catch(() => {});
-            clearRuntimeWorkingReportSnapshot();
-            router.replace("/home");
-          } catch {
-            setSaveBanner("Could not mark ready");
-            setTimeout(() => setSaveBanner(""), 1400);
+            leavingSavedRef.current = false;
+            setSaveBanner(e.saveFailed);
+            setTimeout(() => setSaveBanner(""), 1800);
           } finally {
             setSaving(null);
           }
@@ -424,43 +412,57 @@ export default function NewReportScreen() {
         }}
       >
         <Text style={{ color: colors.text, textAlign: "center", ...poppins("600") }}>
-          {saving === "ready" ? "Updating…" : "Make ready"}
+          {saving === "save" ? t().common.saving : e.saveDraft}
         </Text>
       </Pressable>
 
+      {/* D6: one Send button. Runs the existing steps in order (ready, then waiting), then
+          Home runs the existing sync and shows the result. Queue and send code unchanged. */}
       <Pressable
         onPress={async () => {
-          if (saving) return;
-          setSaving("queued");
+          if (saving || workflowStatus === "queued") return;
+          if (!body.trim()) {
+            setSaveBanner(e.needsText);
+            setTimeout(() => setSaveBanner(""), 1800);
+            return;
+          }
+          if (!(await hasReporterProfileComplete())) {
+            Alert.alert(e.nameNeededTitle, e.nameNeededBody, [
+              { text: t().common.cancel, style: "cancel" },
+              { text: e.addName, onPress: () => router.push("/reporter-profile") },
+            ]);
+            return;
+          }
+          setSaving("send");
+          leavingSavedRef.current = true;
           try {
-            const result = await persist("queued");
-            if (!result) return;
+            const ready = await persist("ready");
+            if (!ready) {
+              leavingSavedRef.current = false;
+              return;
+            }
+            await updateReportStatus(ready.id, "queued");
             setWorkflowStatus("queued");
             await clearWorkingReport().catch(() => {});
             clearRuntimeWorkingReportSnapshot();
-            router.replace("/home");
+            router.replace({ pathname: "/home", params: { send: "1" } });
           } catch {
-            setSaveBanner("Could not add to pending");
-            setTimeout(() => setSaveBanner(""), 1400);
+            leavingSavedRef.current = false;
+            setSaveBanner(e.sendFailed);
+            setTimeout(() => setSaveBanner(""), 1800);
           } finally {
             setSaving(null);
           }
         }}
         style={{
-          backgroundColor: workflowStatus === "queued" ? colors.accentSoft : colors.warning,
+          backgroundColor: colors.accent,
           padding: 16,
           borderRadius: 14,
           opacity: saving ? 0.7 : 1,
         }}
       >
-        <Text
-          style={{
-            color: workflowStatus === "queued" ? colors.textMuted : colors.onAccent,
-            textAlign: "center",
-            ...poppins("600"),
-          }}
-        >
-          {saving === "queued" ? "Adding…" : "Add to pending"}
+        <Text style={{ color: colors.onAccent, textAlign: "center", fontSize: 16, ...poppins("700") }}>
+          {saving === "send" ? e.sendPreparing : e.send}
         </Text>
       </Pressable>
     </ScrollView>

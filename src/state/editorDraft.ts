@@ -2,6 +2,7 @@ import { getVault } from "../lib/vault/expoStorage";
 import { isRealSession } from "./session";
 import { getStoredReportIds, getTombstonedIds } from "./drafts";
 import type { DraftAttachment } from "../lib/attachments/types";
+import { isEmptyWorkingDraft } from "./workingDraftPlan";
 
 export type WorkingReport = {
   reportId?: string;
@@ -54,6 +55,21 @@ export async function flushRuntimeWorkingReportSnapshotToStorage() {
     });
   } catch {
     // ignore
+  }
+}
+
+/**
+ * Leaving the editor (D4): keep what was typed instead of discarding the last seconds the
+ * autosave timer had not written yet. An empty editor creates nothing. Best-effort, like lock.
+ */
+export async function saveRuntimeSnapshotOnExit() {
+  const snapshot = runtimeWorkingReport;
+  runtimeWorkingReport = null;
+  if (!snapshot || isEmptyWorkingDraft(snapshot)) return;
+  try {
+    await saveWorkingReport(snapshot);
+  } catch {
+    // Locked or a cover session: nothing to save into.
   }
 }
 
