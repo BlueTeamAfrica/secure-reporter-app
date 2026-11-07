@@ -30,7 +30,33 @@ export async function importPickedFileToSandbox(input: {
   const dest = `${dir}${attachmentFileName(input.attachmentId, input.displayName, input.mimeType)}`;
 
   await FileSystem.copyAsync({ from: input.sourceUri, to: dest });
+  await deletePickerCacheCopy(input.sourceUri);
   return dest;
+}
+
+/** The system picker's own copy (cache/DocumentPicker/<random>.<ext>). */
+function pickerCacheDir(): string | null {
+  return FileSystem.cacheDirectory ? `${FileSystem.cacheDirectory}DocumentPicker/` : null;
+}
+
+/**
+ * Deletes the picker's cache copy once the app has its own (S7). Only files inside the
+ * picker's cache folder are ever touched, never the user's own files.
+ */
+export async function deletePickerCacheCopy(uri: string) {
+  const dir = pickerCacheDir();
+  if (!dir || !uri || !uri.startsWith(dir)) return;
+  await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+}
+
+/** Size in bytes of a local copy (0 if unknown). */
+export async function localFileSize(uri: string): Promise<number> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists && !info.isDirectory && typeof info.size === "number" ? info.size : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export async function deleteLocalAttachmentFile(uri: string | undefined) {
@@ -46,12 +72,15 @@ export async function deleteAttachmentsFiles(attachments: DraftAttachment[]) {
   await Promise.all(attachments.map((a) => deleteLocalAttachmentFile(a.localUri)));
 }
 
-/** Wipes all imported attachment bytes (device reset, legacy wipe). Does not need the vault. */
+/**
+ * Wipes all imported attachment bytes and the picker's cache copies (erase, legacy wipe).
+ * Does not need the vault. Throws if a folder could not be removed (erase reports the step).
+ */
 export async function deleteAllImportedAttachments() {
   const base = FileSystem.documentDirectory;
-  if (!base) return;
-  const root = `${base}secure_reporter_attachments`;
-  await FileSystem.deleteAsync(root, { idempotent: true }).catch(() => {});
+  if (base) await FileSystem.deleteAsync(`${base}secure_reporter_attachments`, { idempotent: true });
+  const picker = pickerCacheDir();
+  if (picker) await FileSystem.deleteAsync(picker, { idempotent: true });
 }
 
 /**

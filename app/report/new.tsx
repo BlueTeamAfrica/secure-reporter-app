@@ -14,9 +14,16 @@ import { ReportStatus, getReportById, saveReport, updateReport, updateReportStat
 import { hasReporterProfileComplete } from "../../src/state/reporterProfile";
 import { isEmptyWorkingDraft } from "../../src/state/workingDraftPlan";
 import { canSend } from "../../src/state/itemRules";
-import { t } from "../../src/i18n";
+import { fmt, t } from "../../src/i18n";
 import { pickAttachments } from "../../src/lib/attachments/picker";
-import { importPickedFileToSandbox, deleteLocalAttachmentFile } from "../../src/lib/attachments/persistLocal";
+import {
+  importPickedFileToSandbox,
+  deleteLocalAttachmentFile,
+  deletePickerCacheCopy,
+  localFileSize,
+} from "../../src/lib/attachments/persistLocal";
+import { isTooLarge, MAX_FILE_MB } from "../../src/lib/attachments/limits";
+import { fileDescription } from "../../src/i18n/fileDisplay";
 import type { DraftAttachment } from "../../src/lib/attachments/types";
 import { notifyUserInteraction } from "../../src/state/session";
 import { colors } from "../../src/theme/colors";
@@ -158,8 +165,16 @@ export default function NewReportScreen() {
       if (!picked.length) return;
 
       const next: DraftAttachment[] = [];
+      const tooBig: string[] = [];
+      let failed = 0;
       for (const file of picked) {
         const attachmentId = newAttachmentId();
+        // M3: 20 MB per file, checked here, before anything is copied or sent.
+        if (isTooLarge(file.size)) {
+          tooBig.push(file.name);
+          await deletePickerCacheCopy(file.uri);
+          continue;
+        }
         try {
           const localUri = await importPickedFileToSandbox({
             sourceUri: file.uri,
@@ -167,11 +182,18 @@ export default function NewReportScreen() {
             displayName: file.name,
             mimeType: file.mimeType,
           });
+          // The picker may not report a size: measure the copy and apply the same limit.
+          const size = file.size > 0 ? file.size : await localFileSize(localUri);
+          if (isTooLarge(size)) {
+            await deleteLocalAttachmentFile(localUri);
+            tooBig.push(file.name);
+            continue;
+          }
           next.push({
             id: attachmentId,
             name: file.name,
             mimeType: file.mimeType,
-            size: file.size,
+            size,
             localUri,
             status: "local",
             createdAt: new Date().toISOString(),
@@ -179,15 +201,17 @@ export default function NewReportScreen() {
         } catch {
           // Avoid logging file names/paths or platform error objects (may contain URIs).
           console.warn("[ATTACHMENT] import failed");
+          failed++;
         }
       }
 
-      if (!next.length) {
+      if (next.length) setAttachments((prev) => [...prev, ...next]);
+      if (tooBig.length) {
+        const names = tooBig.join(t().date.separator);
+        Alert.alert(t().editor.files, fmt(t().editor.fileTooBig, { limit: MAX_FILE_MB, files: names }));
+      } else if (failed > 0 || !next.length) {
         Alert.alert(t().editor.files, t().editor.addFileFailed);
-        return;
       }
-
-      setAttachments((prev) => [...prev, ...next]);
     } finally {
       setPicking(false);
     }
@@ -357,8 +381,7 @@ export default function NewReportScreen() {
                   {item.name}
                 </Text>
                 <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2, ...poppins("400") }}>
-                  {item.mimeType}
-                  {item.size > 0 ? ` · ${Math.max(1, Math.round(item.size / 1024))} KB` : ""}
+                  {fileDescription(item.mimeType, item.name, item.size, t())}
                 </Text>
               </View>
               <Pressable
