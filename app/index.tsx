@@ -4,6 +4,7 @@ import { Redirect } from "expo-router";
 import Screen from "../src/components/layout/Screen";
 import { isDeviceConfigured } from "../src/state/device";
 import { ensureLegacyDataWiped } from "../src/state/legacyWipe";
+import { t } from "../src/i18n";
 import { colors } from "../src/theme/colors";
 import { poppins } from "../src/theme/fonts";
 
@@ -26,7 +27,7 @@ export default function IndexScreen() {
   if (loading) {
     return (
       <Screen>
-        <Text style={{ color: colors.text, ...poppins("400") }}>Loading...</Text>
+        <Text style={{ color: colors.text, ...poppins("400") }}>{t().common.loading}</Text>
       </Screen>
     );
   }

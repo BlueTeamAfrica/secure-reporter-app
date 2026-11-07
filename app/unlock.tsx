@@ -14,8 +14,9 @@ import { endSession } from "../src/state/session";
 import { hasReporterProfileComplete } from "../src/state/reporterProfile";
 import { PIN_STRINGS, isPermanentUnlockError, pinErrorMessage } from "../src/state/pinMessages";
 import PinPad from "../src/components/PinPad";
+import { fmt } from "../src/i18n";
 import { colors } from "../src/theme/colors";
-import { poppins } from "../src/theme/fonts";
+import { poppins, lh } from "../src/theme/fonts";
 
 /**
  * The only way into a session. The PIN is tried against both vaults (always both); a real PIN
@@ -127,7 +128,9 @@ export default function UnlockScreen() {
     if (message && message !== PIN_STRINGS.unlockWait) setMessage("");
   }
 
-  const padMessage = lockedUntil ? `Please wait ${remainingSeconds}s` : message || undefined;
+  const padMessage = lockedUntil
+    ? fmt(PIN_STRINGS.unlockWaitSeconds, { seconds: remainingSeconds })
+    : message || undefined;
   const disabled = !!lockedUntil || working || blocked;
 
   return (
@@ -145,7 +148,7 @@ export default function UnlockScreen() {
         </Text>
 
         <Text
-          style={{ color: colors.textMuted, fontSize: 15, lineHeight: 22, marginBottom: 28, ...poppins("400") }}
+          style={{ color: colors.textMuted, fontSize: 15, lineHeight: lh(22), marginBottom: 28, ...poppins("400") }}
         >
           {PIN_STRINGS.unlockBody}
         </Text>

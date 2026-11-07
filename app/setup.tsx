@@ -5,7 +5,7 @@ import { createDevicePins } from "../src/state/device";
 import { PIN_STRINGS, pinErrorMessage } from "../src/state/pinMessages";
 import PinPad from "../src/components/PinPad";
 import { colors } from "../src/theme/colors";
-import { poppins } from "../src/theme/fonts";
+import { poppins, lh } from "../src/theme/fonts";
 
 /**
  * First-run setup: real code (twice) → second code (twice, must differ) → acknowledgment →
@@ -19,7 +19,7 @@ function Header({ title, body }: { title: string; body: string }) {
     <>
       <Text style={{ color: colors.text, fontSize: 28, marginBottom: 10, ...poppins("700") }}>{title}</Text>
       <Text
-        style={{ color: colors.textMuted, fontSize: 15, lineHeight: 22, marginBottom: 28, ...poppins("400") }}
+        style={{ color: colors.textMuted, fontSize: 15, lineHeight: lh(22), marginBottom: 28, ...poppins("400") }}
       >
         {body}
       </Text>

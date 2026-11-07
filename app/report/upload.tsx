@@ -4,8 +4,9 @@ import { router, useLocalSearchParams } from "expo-router";
 import type { DraftAttachment } from "../../src/lib/attachments/types";
 import { saveReport, updateReport, ReportStatus, getReportById } from "../../src/state/drafts";
 import { clearWorkingReport, getWorkingReport } from "../../src/state/editorDraft";
+import { t } from "../../src/i18n";
 import { colors } from "../../src/theme/colors";
-import { poppins } from "../../src/theme/fonts";
+import { poppins, lh } from "../../src/theme/fonts";
 
 export default function UploadScreen() {
   const { id, title, body, status } = useLocalSearchParams<{
@@ -59,10 +60,10 @@ export default function UploadScreen() {
             params: { status: nextStatus },
           });
         }, 800);
-      } catch (err) {
-        // Avoid logging raw errors which may include file paths or other sensitive data.
+      } catch {
+        // Avoid logging or showing raw errors: they may include file paths.
         console.error("Save failed");
-        setError(err instanceof Error ? err.message : "Failed to save");
+        setError(t().legacy.saveFailed);
       }
     }
 
@@ -84,14 +85,14 @@ export default function UploadScreen() {
           style={{
             color: colors.error,
             textAlign: "center",
-            lineHeight: 22,
+            lineHeight: lh(22),
             ...poppins("400"),
           }}
         >
           {error}
         </Text>
       ) : (
-        <Text style={{ color: colors.textMuted, ...poppins("400") }}>Saving…</Text>
+        <Text style={{ color: colors.textMuted, ...poppins("400") }}>{t().common.saving}</Text>
       )}
     </View>
   );

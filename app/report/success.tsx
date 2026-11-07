@@ -1,17 +1,12 @@
 import { View, Text, Pressable } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
+import { t } from "../../src/i18n";
 import { colors } from "../../src/theme/colors";
-import { poppins } from "../../src/theme/fonts";
+import { poppins, lh } from "../../src/theme/fonts";
 
 export default function SuccessScreen() {
-  const { status } = useLocalSearchParams<{ status?: string }>();
-
-  const label =
-    status === "ready"
-      ? "marked as ready"
-      : status === "queued"
-        ? "queued locally"
-        : "saved";
+  useLocalSearchParams<{ status?: string }>();
+  const s = t().legacy;
 
   return (
     <View
@@ -24,7 +19,7 @@ export default function SuccessScreen() {
       }}
     >
       <Text style={{ color: colors.text, fontSize: 24, marginBottom: 16, ...poppins("700") }}>
-        Saved
+        {s.saved}
       </Text>
 
       <Text
@@ -32,11 +27,11 @@ export default function SuccessScreen() {
           color: colors.textMuted,
           marginBottom: 20,
           textAlign: "center",
-          lineHeight: 22,
+          lineHeight: lh(22),
           ...poppins("400"),
         }}
       >
-        Your note was {label}.
+        {s.savedBody}
       </Text>
 
       <Pressable
@@ -48,7 +43,7 @@ export default function SuccessScreen() {
           borderRadius: 14,
         }}
       >
-        <Text style={{ color: colors.onAccent, ...poppins("600") }}>Back to Home</Text>
+        <Text style={{ color: colors.onAccent, ...poppins("600") }}>{s.backHome}</Text>
       </Pressable>
     </View>
   );

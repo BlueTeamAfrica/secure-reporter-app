@@ -4,8 +4,9 @@ import { useLocalSearchParams, router, useFocusEffect } from "expo-router";
 import { getWorkingReport } from "../../src/state/editorDraft";
 import { getReportById } from "../../src/state/drafts";
 import { hasReporterProfileComplete } from "../../src/state/reporterProfile";
+import { fmt, t } from "../../src/i18n";
 import { colors } from "../../src/theme/colors";
-import { poppins } from "../../src/theme/fonts";
+import { poppins, lh } from "../../src/theme/fonts";
 
 export default function ReviewScreen() {
   const { id, title, body, status } = useLocalSearchParams<{
@@ -48,7 +49,7 @@ export default function ReviewScreen() {
       contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
     >
       <Text style={{ color: colors.text, fontSize: 24, marginBottom: 16, ...poppins("700") }}>
-        Preview
+        {t().legacy.preview}
       </Text>
 
       <View
@@ -65,14 +66,14 @@ export default function ReviewScreen() {
           {title}
         </Text>
 
-        <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 24, ...poppins("400") }}>
+        <Text style={{ color: colors.text, marginBottom: 12, lineHeight: lh(24), ...poppins("400") }}>
           {body}
         </Text>
 
         {attachmentNames.length > 0 ? (
           <View style={{ marginBottom: 12 }}>
             <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6, ...poppins("600") }}>
-              {attachmentNames.length} file{attachmentNames.length === 1 ? "" : "s"}
+              {fmt(t().home.files, { count: attachmentNames.length })}
             </Text>
             {attachmentNames.map((name, index) => (
               <Text
@@ -87,7 +88,14 @@ export default function ReviewScreen() {
         ) : null}
 
         <Text style={{ color: colors.textMuted, fontSize: 12, ...poppins("600") }}>
-          CURRENT STATUS: {String(currentStatus).toUpperCase()}
+          {fmt(t().legacy.status, {
+            status:
+              currentStatus === "ready"
+                ? t().home.statusReady
+                : currentStatus === "queued"
+                  ? t().home.statusWaiting
+                  : t().home.statusDraft,
+          })}
         </Text>
       </View>
 
@@ -113,7 +121,7 @@ export default function ReviewScreen() {
         }}
       >
         <Text style={{ color: colors.text, textAlign: "center", ...poppins("600") }}>
-          Save
+          {t().common.save}
         </Text>
       </Pressable>
 
@@ -137,7 +145,7 @@ export default function ReviewScreen() {
         }}
       >
         <Text style={{ color: colors.onAccent, textAlign: "center", ...poppins("600") }}>
-          Mark Ready
+          {t().legacy.makeReady}
         </Text>
       </Pressable>
 
@@ -145,14 +153,10 @@ export default function ReviewScreen() {
         onPress={async () => {
           const ok = await hasReporterProfileComplete();
           if (!ok) {
-            Alert.alert(
-              "Workspace setup needed",
-              "Add your name in Settings → Workspace profile before you can sync items.",
-              [
-                { text: "Cancel", style: "cancel" },
-                { text: "Open profile", onPress: () => router.push("/reporter-profile") },
-              ]
-            );
+            Alert.alert(t().editor.nameNeededTitle, t().editor.nameNeededBody, [
+              { text: t().common.cancel, style: "cancel" },
+              { text: t().editor.addName, onPress: () => router.push("/reporter-profile") },
+            ]);
             return;
           }
           router.push({
@@ -173,7 +177,7 @@ export default function ReviewScreen() {
         }}
       >
         <Text style={{ color: colors.onAccent, textAlign: "center", ...poppins("600") }}>
-          Add to Pending
+          {t().legacy.addToWaiting}
         </Text>
       </Pressable>
 
@@ -195,7 +199,7 @@ export default function ReviewScreen() {
         }}
       >
         <Text style={{ color: colors.textMuted, textAlign: "center", ...poppins("500") }}>
-          Edit
+          {t().legacy.edit}
         </Text>
       </Pressable>
     </ScrollView>

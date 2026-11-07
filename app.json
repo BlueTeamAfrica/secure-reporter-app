@@ -44,7 +44,19 @@
       ],
       "expo-secure-store",
       "react-native-quick-crypto",
-      "expo-updates"
+      "expo-updates",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "node_modules/@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf",
+            "node_modules/@expo-google-fonts/cairo/500Medium/Cairo_500Medium.ttf",
+            "node_modules/@expo-google-fonts/cairo/600SemiBold/Cairo_600SemiBold.ttf",
+            "node_modules/@expo-google-fonts/cairo/700Bold/Cairo_700Bold.ttf"
+          ]
+        }
+      ],
+      "expo-system-ui"
     ],
     "updates": {
       "enabled": false,
@@ -59,6 +71,11 @@
       "eas": {
         "projectId": "96fa73ab-18a3-4292-a919-41f3a9193fc3"
       }
-    }
+    },
+    "androidStatusBar": {
+      "barStyle": "dark-content",
+      "backgroundColor": "#F5F1E8"
+    },
+    "backgroundColor": "#F5F1E8"
   }
 }

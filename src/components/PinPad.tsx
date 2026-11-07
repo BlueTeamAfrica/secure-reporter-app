@@ -1,7 +1,10 @@
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
 import { colors } from "../theme/colors";
-import { poppins } from "../theme/fonts";
+import { font as poppins, lh } from "../theme/fonts";
+
+/** Keypad, dots and digits keep one layout in both languages (D5): never mirrored in RTL. */
+const LTR = { direction: "ltr" } as const;
 
 const BASE_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 
@@ -80,6 +83,7 @@ export default function PinPad({
       {/* Dots display */}
       <View
         style={{
+          ...LTR,
           width: "100%",
           backgroundColor: colors.surface,
           paddingVertical: 16,
@@ -97,6 +101,7 @@ export default function PinPad({
             fontSize: 18,
             letterSpacing: 6,
             textAlign: "center",
+            writingDirection: "ltr",
             ...poppins("500"),
           }}
         >
@@ -111,6 +116,7 @@ export default function PinPad({
           style={{
             color: messageIsError ? colors.error : colors.textMuted,
             fontSize: 14,
+            lineHeight: lh(20),
             marginBottom: 18,
             ...poppins("400"),
           }}
@@ -123,7 +129,7 @@ export default function PinPad({
 
       {/* Rows 1–3: digits[0–8] */}
       {([0, 3, 6] as const).map((offset) => (
-        <View key={offset} style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
+        <View key={offset} style={{ ...LTR, flexDirection: "row", gap: 10, marginBottom: 10 }}>
           {digits.slice(offset, offset + 3).map((d) => (
             <Pressable key={d} onPress={() => appendDigit(d)} disabled={disabled} style={keyStyle}>
               <Text style={{ color: colors.text, fontSize: 18, ...poppins("600") }}>{d}</Text>
@@ -133,7 +139,7 @@ export default function PinPad({
       ))}
 
       {/* Row 4: backspace | digits[9] | submit */}
-      <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+      <View style={{ ...LTR, flexDirection: "row", gap: 10, marginBottom: 14 }}>
         <Pressable onPress={backspace} disabled={disabled} style={keyStyle}>
           <Text style={{ color: colors.textMuted, fontSize: 16, ...poppins("600") }}>⌫</Text>
         </Pressable>

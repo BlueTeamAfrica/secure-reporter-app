@@ -1,53 +1,29 @@
 /**
  * User-facing messages for setup and unlock failures. Pure (no React Native imports) so the
- * mapping is unit-tested. English for now; neutral wording (no "encrypted", "secure", "report").
+ * mapping is unit-tested. Text lives in src/i18n/strings.ts; neutral wording (no "encrypted", "secure", "report").
  *
  * The same message is shown whichever vault a PIN belongs to: nothing here may reveal that a
  * second PIN exists.
  */
-export const PIN_STRINGS = {
-  // Setup
-  setupCreateTitle: "Create a code",
-  setupCreateBody: "You will use this code every time you open the app. 4 to 6 digits.",
-  setupConfirmTitle: "Confirm code",
-  setupConfirmBody: "Enter the same code again to confirm.",
-  setupSecondTitle: "Create a second code",
-  setupSecondBody:
-    "This code opens a simple notes view. Use it if you are ever made to open the app. It must be different from your first code.",
-  setupSecondConfirmTitle: "Confirm second code",
-  setupMismatch: "Codes do not match. Try again.",
-  setupSameAsFirst: "The second code must be different from the first.",
-  setupAckTitle: "Before you continue",
-  setupAckBody:
-    "If you forget your code, your drafts can't be recovered. There is no reset and no recovery.",
-  setupAckButton: "I understand",
-  setupWorking: "Setting up…",
+import { t, TABLES } from "../i18n/strings.ts";
 
-  // Unlock
-  unlockTitle: "Continue",
-  unlockBody: "Enter your code to continue.",
-  unlockButton: "Continue",
-  unlockWorking: "Checking…",
-  unlockTryAgain: "Try again.",
-  unlockWait: "Please wait a moment.",
+type PinStrings = typeof TABLES.en.pin;
 
-  // Errors (shared)
-  errInvalidPin: "Use 4 to 6 digits.",
-  errUnsupported: "This version can't open the data on this phone. Install the latest version.",
-  errDeviceKeyMissing: "The data on this phone can't be opened on this device.",
-  errUnavailable: "This version of the app is missing a required component. Install the latest version.",
-  errNotSetUp: "The app needs to be set up again.",
-  errGeneric: "Something went wrong. Try again.",
-} as const;
+/**
+ * The active language's PIN strings (getters over src/i18n/strings.ts, so the language chosen
+ * at start-up applies). Same keys and English text as before.
+ */
+export const PIN_STRINGS = Object.defineProperties(
+  {} as PinStrings,
+  Object.fromEntries(
+    (Object.keys(TABLES.en.pin) as (keyof PinStrings)[]).map((key) => [
+      key,
+      { enumerable: true, get: () => t().pin[key] },
+    ]),
+  ),
+);
 
-export type PinErrorMessage =
-  | typeof PIN_STRINGS.errInvalidPin
-  | typeof PIN_STRINGS.errUnsupported
-  | typeof PIN_STRINGS.errDeviceKeyMissing
-  | typeof PIN_STRINGS.errUnavailable
-  | typeof PIN_STRINGS.errNotSetUp
-  | typeof PIN_STRINGS.errGeneric
-  | typeof PIN_STRINGS.setupSameAsFirst;
+export type PinErrorMessage = string;
 
 /** Maps a thrown error to a constant message. Never includes the error's own text. */
 export function pinErrorMessage(error: unknown): PinErrorMessage {
