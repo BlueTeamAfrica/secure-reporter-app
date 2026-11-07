@@ -61,13 +61,38 @@ export async function unlockWithPin(pin: string): Promise<VaultKind | null> {
   return result.kind;
 }
 
-/** Erases everything: vault (device secret first), attachment files, lockout counters. */
-export async function wipeDevice() {
+/**
+ * Erases everything on this phone: both vaults (device secret first, so the blobs are useless
+ * even if a delete fails), every local attachment file, the lockout counters and the keypad
+ * preference. Every step runs even if an earlier one fails. The language choice is removed by
+ * the caller (language.ts), which then reloads to first launch.
+ */
+export async function wipeDevice(): Promise<{ complete: boolean }> {
   endSession();
-  await getVault().wipeAll();
-  await deleteAllImportedAttachments();
-  await SecureStore.deleteItemAsync(DEVICE_FAILED_ATTEMPTS_KEY);
-  await SecureStore.deleteItemAsync(DEVICE_LOCKOUT_UNTIL_KEY);
+  let complete = true;
+  const step = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch {
+      complete = false;
+    }
+  };
+  await step(() => getVault().wipeAll());
+  await step(() => deleteAllImportedAttachments());
+  for (const key of [DEVICE_FAILED_ATTEMPTS_KEY, DEVICE_LOCKOUT_UNTIL_KEY, RANDOMIZE_KEYPAD_KEY]) {
+    await step(() => SecureStore.deleteItemAsync(key));
+  }
+  return { complete };
+}
+
+/**
+ * Sets a new code after the current one was checked (checkPinInSession). The vault refuses a
+ * new code equal to the other one (PINS_NOT_DISTINCT); "real" re-checks the current code.
+ */
+export async function changeDevicePin(kind: VaultKind, currentPin: string, newPin: string) {
+  await requireKeyDerivation();
+  if (kind === "real") await getVault().changePin("real", currentPin, newPin);
+  else await getVault().changePin("cover", null, newPin);
 }
 
 export async function getFailedAttempts() {

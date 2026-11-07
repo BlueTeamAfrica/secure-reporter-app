@@ -114,6 +114,16 @@ export default function SettingsScreen() {
 
         <Row title={s.language} hint={`${s.languageCurrent} · ${nextName}`} onPress={confirmLanguage} />
         <Row
+          title={s.changeCode}
+          hint={s.changeCodeHint}
+          onPress={go({ pathname: "/settings/change-code", params: { kind: "real" } })}
+        />
+        <Row
+          title={s.changeSecondCode}
+          hint={s.changeSecondCodeHint}
+          onPress={go({ pathname: "/settings/change-code", params: { kind: "cover" } })}
+        />
+        <Row
           title={s.name}
           hint={s.nameHint}
           onPress={go({ pathname: "/reporter-profile", params: { returnTo: "settings" } })}
@@ -142,6 +152,8 @@ export default function SettingsScreen() {
             }}
           />
         </View>
+
+        <Row title={s.erase} hint={s.eraseHint} onPress={go("/settings/erase")} danger />
 
         {IS_TEST_BUILD ? (
           <Row title={s.diagnostics} hint={s.diagnosticsHint} onPress={go("/settings/storage-check")} />

@@ -119,3 +119,37 @@ describe("lockout policy (unchanged from the PIN screen)", () => {
     assert.deepEqual(afterFailedAttempt(4, 0), { failedAttempts: 0, locked: true, lockoutUntil: HARD_COOLDOWN_MS });
   });
 });
+
+describe("Settings flows on the real vault", () => {
+  it("erase: only the real code passes; the second code is a counted wrong try and erases nothing", async () => {
+    const { vault } = await openVault();
+    const { c, state } = counters({ now: 0 });
+    assert.deepEqual(await guardedPinAttempt(c, () => vault.checkPin("real", COVER_PIN)), { ok: false, reason: "wrong" });
+    assert.equal(state.recorded, 1);
+    assert.equal(vault.currentKind(), "real", "a wrong code does not end the session");
+    assert.deepEqual(await guardedPinAttempt(c, () => vault.checkPin("real", REAL_PIN)), { ok: true });
+    await vault.wipeAll();
+    assert.equal(await vault.isInitialized(), false, "back to first launch");
+  });
+
+  it("change second code: current second code checked, must differ from the real code, old one stops working", async () => {
+    const { vault } = await openVault();
+    const { c } = counters({ now: 0 });
+    assert.deepEqual(await guardedPinAttempt(c, () => vault.checkPin("cover", COVER_PIN)), { ok: true });
+    await assert.rejects(vault.changePin("cover", null, REAL_PIN), (e: { code?: string }) => e.code === "PINS_NOT_DISTINCT");
+    await vault.changePin("cover", null, "2468");
+    assert.equal(vault.currentKind(), "real");
+    vault.lock();
+    assert.equal(await vault.unlock(COVER_PIN), null);
+    assert.deepEqual(await vault.unlock("2468"), { kind: "cover" });
+  });
+
+  it("change code: must differ from the second code; the old real code stops working", async () => {
+    const { vault } = await openVault();
+    await assert.rejects(vault.changePin("real", REAL_PIN, COVER_PIN), (e: { code?: string }) => e.code === "PINS_NOT_DISTINCT");
+    await vault.changePin("real", REAL_PIN, "13579");
+    vault.lock();
+    assert.equal(await vault.unlock(REAL_PIN), null);
+    assert.deepEqual(await vault.unlock("13579"), { kind: "real" });
+  });
+});
