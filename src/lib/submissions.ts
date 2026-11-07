@@ -1,6 +1,7 @@
 import { encryptDraftText } from "./crypto/drafts";
 import type { SubmittedAttachment } from "./attachments/types";
 import type { ReporterFirestoreFields } from "../state/reporterProfile";
+import { interpretCreateResponse } from "./firestoreReceipt";
 
 export type SubmissionPayload = {
   schemaVersion: 2;
@@ -46,10 +47,16 @@ function requireEnv(name: string, value: string | undefined) {
   return value;
 }
 
+/**
+ * Writes the submission as Firestore document `submissions/<submissionId>`. The id is random,
+ * created once per item, so a re-send of the same item can't create a second document: the
+ * server answers ALREADY_EXISTS, which counts as received (firestoreReceipt.ts).
+ */
 export async function uploadEncryptedSubmission(
   payload: SubmissionPayload,
   secret: string,
-  reporter: ReporterFirestoreFields
+  reporter: ReporterFirestoreFields,
+  submissionId: string
 ) {
   const projectId = requireEnv(
     "EXPO_PUBLIC_FIREBASE_PROJECT_ID",
@@ -65,13 +72,8 @@ export async function uploadEncryptedSubmission(
   const encryptedPayload = encryptDraftText(plainJson, secret);
   const uploadedAt = new Date().toISOString();
 
-  console.log("[SYNC:firestore] write preparing", {
-    clientSubmissionId: payload.clientSubmissionId,
-    itemId: payload.itemId,
-    payloadAttachmentCount: payload.attachments.length,
-  });
-
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/submissions?key=${apiKey}`;
+  const documentName = `projects/${projectId}/databases/(default)/documents/submissions/${submissionId}`;
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/submissions?documentId=${encodeURIComponent(submissionId)}&key=${apiKey}`;
 
   const firestoreBody = {
     fields: {
@@ -105,55 +107,25 @@ export async function uploadEncryptedSubmission(
     body: JSON.stringify(firestoreBody),
   });
 
-  const text = await response.text();
-
-  if (!response.ok) {
-    // Do not log Firestore response bodies: they may echo sensitive fields back (including ciphertext).
-    console.error("[SYNC:firestore] write FAILED", {
+  // Never log the response body: it may echo fields back (including ciphertext).
+  const receipt = interpretCreateResponse(
+    response.status,
+    await response.text(),
+    documentName,
+    payload.clientSubmissionId
+  );
+  if (!receipt.received) {
+    console.error("[SYNC:firestore] write not confirmed", {
       status: response.status,
       clientSubmissionId: payload.clientSubmissionId,
-      itemId: payload.itemId,
     });
-    throw new Error(`Firestore REST write failed (${response.status})`);
+    throw new Error(receipt.reason);
   }
-
-  let parsed: any = null;
-
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-
-  const firestoreId = typeof parsed?.name === "string" ? parsed.name : null;
-  if (!firestoreId) {
-    // Treat missing server receipt as ambiguous: caller must not purge locally.
-    throw new Error("Server receipt missing (no Firestore document id returned)");
-  }
-
-  // If the server echoes fields back, validate the echoed clientSubmissionId when present.
-  const echoedClientSubmissionId =
-    typeof parsed?.fields?.clientSubmissionId?.stringValue === "string"
-      ? parsed.fields.clientSubmissionId.stringValue
-      : null;
-  if (echoedClientSubmissionId && echoedClientSubmissionId !== payload.clientSubmissionId) {
-    throw new Error("Server receipt clientSubmissionId mismatch");
-  }
-
-  console.log("[SYNC:firestore] write success", {
-    serverSubmissionId: firestoreId,
-    clientSubmissionId: payload.clientSubmissionId,
-  });
-
-  const createdFieldKeys =
-    parsed && typeof parsed.fields === "object" && parsed.fields
-      ? Object.keys(parsed.fields as Record<string, unknown>)
-      : [];
 
   return {
     ok: true as const,
     clientSubmissionId: payload.clientSubmissionId,
-    serverSubmissionId: firestoreId,
-    createdFieldKeys,
+    serverSubmissionId: receipt.serverSubmissionId,
+    alreadyExisted: receipt.alreadyExisted,
   };
 }

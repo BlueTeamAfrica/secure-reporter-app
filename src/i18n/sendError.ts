@@ -10,6 +10,7 @@ import { fmt, type Strings } from "./strings.ts";
 
 const MISSING = "MISSING_ATTACHMENT:";
 const UNREADABLE = "ATTACHMENT_READ_FAILED:";
+const TOO_LARGE = "FILE_TOO_LARGE:";
 
 export function displaySendError(
   stored: string,
@@ -26,6 +27,10 @@ export function displaySendError(
   if (stored.startsWith(UNREADABLE)) {
     const fileName = nameFor(UNREADABLE);
     return fileName ? fmt(s.unreadableFileNamed, { fileName }) : s.unreadableFile;
+  }
+  if (stored.startsWith(TOO_LARGE)) {
+    const fileName = nameFor(TOO_LARGE);
+    return fileName ? fmt(s.tooLargeNamed, { fileName }) : s.tooLarge;
   }
   return s.generic;
 }

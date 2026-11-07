@@ -93,6 +93,8 @@ const en = {
     missingFile: "A file is no longer on this phone. Remove it or add it again, then send.",
     unreadableFileNamed: "A file could not be read: {fileName}. Remove it or add it again, then send.",
     unreadableFile: "A file could not be read. Remove it or add it again, then send.",
+    tooLargeNamed: "This file is too large to send: {fileName}. Remove it, then send again.",
+    tooLarge: "A file is too large to send. Remove it, then send again.",
     generic: "Could not send. It will be tried again.",
   },
   editor: {
@@ -306,6 +308,8 @@ const ar: Strings = {
     missingFile: "لم يعد أحد الملفات موجوداً على الهاتف. أزله أو أضفه من جديد ثم أرسل.",
     unreadableFileNamed: "تعذّرت قراءة الملف: {fileName}. أزله أو أضفه من جديد ثم أرسل.",
     unreadableFile: "تعذّرت قراءة أحد الملفات. أزله أو أضفه من جديد ثم أرسل.",
+    tooLargeNamed: "هذا الملف أكبر من أن يُرسل: {fileName}. أزله ثم أرسل من جديد.",
+    tooLarge: "أحد الملفات أكبر من أن يُرسل. أزله ثم أرسل من جديد.",
     generic: "تعذّر الإرسال. ستُعاد المحاولة.",
   },
   editor: {

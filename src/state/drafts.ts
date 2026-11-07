@@ -13,7 +13,9 @@ import {
   type LocalAttachmentBytes,
 } from "../lib/attachments/storageUpload";
 import { attachmentReadFailedCode, missingAttachmentCode } from "../lib/attachments/sendErrorMessages";
-import { storageObjectName } from "../lib/attachments/fileNames";
+import { itemStoragePath } from "../lib/attachments/fileNames";
+import { getRandomBytes } from "expo-crypto";
+import { isSubmissionId, makeSubmissionId } from "./submissionIds";
 import { formatSubmissionPipelineError } from "../lib/attachments/submissionErrors";
 import { isMissingLocalAttachmentError } from "../lib/attachments/readLocalFileForUpload";
 
@@ -68,6 +70,8 @@ type StoredReportRecord = {
   lastSubmissionAttemptAt: string | null;
   attachments: DraftAttachment[];
   lastSubmissionError?: string | null;
+  /** Random, created once (submissionIds.ts): Firestore document id and storage folder. */
+  submissionId?: string;
 };
 
 // In-memory duplicate protection: avoid concurrent sync attempts for the same item.
@@ -228,6 +232,7 @@ export async function saveReport(
     createdAt: now,
     updatedAt: now,
     lastSubmissionAttemptAt: null,
+    submissionId: makeSubmissionId(getRandomBytes),
   };
 
   await mutateStoredReports((reports) => [nextReport, ...reports]);
@@ -428,6 +433,23 @@ export async function purgeSubmittedReportLocally(input: {
   return { ok: true as const, errors: [], stages };
 }
 
+/** The item's submission id; created and saved once for items made before it existed. */
+async function ensureSubmissionId(id: string): Promise<string> {
+  const existing = (await readStoredReports()).find((r) => r.id === id)?.submissionId;
+  if (isSubmissionId(existing)) return existing;
+  const created = makeSubmissionId(getRandomBytes);
+  let saved: string | undefined;
+  await mutateStoredReports((reports) =>
+    reports.map((r) => {
+      if (r.id !== id) return r;
+      saved = isSubmissionId(r.submissionId) ? r.submissionId : created;
+      return { ...r, submissionId: saved };
+    })
+  );
+  if (!saved) throw new Error("Item not found");
+  return saved;
+}
+
 async function clearLocalAttachmentsAfterSuccessfulSend(id: string) {
   const target = (await readStoredReports()).find((r) => r.id === id);
   if (!target?.attachments?.length) return;
@@ -521,6 +543,7 @@ async function syncMarkedItem(clientSubmissionId: string) {
   }
 
   const submissionSecret = getSubmissionPayloadSecret();
+  const submissionId = await ensureSubmissionId(clientSubmissionId);
   const attemptId = `${report.id}-${Date.now()}`;
   const uploadedStoragePaths: string[] = [];
   let pipelineStep: "attachments" | "firestore" | "confirmed" | "local_cleanup" = "attachments";
@@ -553,8 +576,8 @@ async function syncMarkedItem(clientSubmissionId: string) {
     const submittedAttachments: SubmittedAttachment[] = [];
 
     for (const att of report.attachments) {
-      const objectName = storageObjectName(att.id, att.name);
-      const expectedStoragePath = `submissions/${attemptId}/attachments/${objectName}`;
+      // Fixed path per item, no file name in it: a retry reuses it (S3, S10).
+      const expectedStoragePath = itemStoragePath(submissionId, att.id, att.name, att.mimeType);
       console.log("[SYNC] attachment upload: start", { clientSubmissionId, attachmentId: att.id });
 
       // Step 1: read the local file. Only errors from this step can mean "missing on this
@@ -575,14 +598,16 @@ async function syncMarkedItem(clientSubmissionId: string) {
       }
 
       // Step 2: upload. Errors propagate unchanged and are never classified as a missing file.
-      const uploaded = await uploadAttachmentBytes({
+      const { uploaded, alreadyStored } = await uploadAttachmentBytes({
         bytes: local.bytes,
         mimeType: local.mimeType,
         storagePath: expectedStoragePath,
         attachmentId: att.id,
         originalName: att.name,
       });
-      uploadedStoragePaths.push(uploaded.storagePath);
+      // Rollback deletes only what this attempt stored: a file already there may belong to a
+      // submission the server has already received.
+      if (!alreadyStored) uploadedStoragePaths.push(uploaded.storagePath);
       submittedAttachments.push(uploaded);
       console.log("[SYNC] attachment upload: success", { clientSubmissionId, attachmentId: att.id });
     }
@@ -607,7 +632,7 @@ async function syncMarkedItem(clientSubmissionId: string) {
       attachments: submittedAttachments,
     };
 
-    const serverReceipt = await uploadEncryptedSubmission(payload, submissionSecret, reporter);
+    const serverReceipt = await uploadEncryptedSubmission(payload, submissionSecret, reporter, submissionId);
     if (!serverReceipt?.ok) throw new Error("Ambiguous server receipt");
     if (serverReceipt.clientSubmissionId !== report.id) {
       throw new Error("Server receipt clientSubmissionId mismatch");

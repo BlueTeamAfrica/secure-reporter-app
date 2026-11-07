@@ -22,6 +22,12 @@ export const SEND_ERROR_MESSAGES = {
 } as const;
 
 const MISSING_ATTACHMENT_PREFIX = "MISSING_ATTACHMENT:";
+const FILE_TOO_LARGE_PREFIX = "FILE_TOO_LARGE:";
+
+/** Stored when the server refuses a file for its size. Contains no file name. */
+export function fileTooLargeCode(attachmentId: string) {
+  return `${FILE_TOO_LARGE_PREFIX}${attachmentId}`;
+}
 const ATTACHMENT_READ_FAILED_PREFIX = "ATTACHMENT_READ_FAILED:";
 
 /** Stored when the attachment's local file no longer exists. Contains no file name. */

@@ -9,7 +9,8 @@ import {
   missingLocalAttachmentError,
   normalizeLocalFileUri,
 } from "./readLocalFileForUpload";
-import { SEND_ERROR_MESSAGES } from "./sendErrorMessages";
+import { fileTooLargeCode, SEND_ERROR_MESSAGES } from "./sendErrorMessages";
+import { classifyStorageError } from "./storageErrors";
 import type { SubmittedAttachment } from "./types";
 
 /**
@@ -27,10 +28,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-/**
- * Object paths contain the sanitized file name (`<attachmentId>_<name>`), so remove them from
- * any service message before it is logged or stored.
- */
+/** Remove object paths from any service message before it is logged or stored. */
 function redactObjectPaths(message: string, storagePaths: string[]): string {
   let out = message;
   for (const path of storagePaths) {
@@ -84,14 +82,19 @@ export async function readLocalAttachmentBytes(input: {
   };
 }
 
-/** Step 2: upload bytes already read from the device. */
+/**
+ * Step 2: upload bytes already read from the device, to the item's fixed path.
+ * - Already there (an earlier attempt of this item stored it): counts as uploaded, and
+ *   `alreadyStored` tells the caller not to delete it on rollback.
+ * - Refused for size: throws the FILE_TOO_LARGE code (retrying can't help).
+ */
 export async function uploadAttachmentBytes(input: {
   bytes: Uint8Array;
   mimeType: string;
   storagePath: string;
   attachmentId: string;
   originalName: string;
-}): Promise<SubmittedAttachment> {
+}): Promise<{ uploaded: SubmittedAttachment; alreadyStored: boolean }> {
   const { bytes, mimeType } = input;
   const { bucket } = getSupabaseEnv();
   const supabase = getSupabaseClient();
@@ -110,7 +113,12 @@ export async function uploadAttachmentBytes(input: {
     upsert: false,
   });
 
-  if (error) {
+  const kind = error ? classifyStorageError(error) : null;
+  if (kind === "too_large") {
+    console.warn("[SEND:supabase] upload refused: too large", { attachmentId: input.attachmentId, size: bytes.length });
+    throw new Error(fileTooLargeCode(input.attachmentId));
+  }
+  if (error && kind !== "exists") {
     const reason = redactObjectPaths(error.message ?? "unknown error", [input.storagePath]);
     console.error("[SEND:supabase] upload failed", {
       attachmentId: input.attachmentId,
@@ -119,16 +127,19 @@ export async function uploadAttachmentBytes(input: {
     throw new Error(SEND_ERROR_MESSAGES.uploadFailed.replace("{reason}", () => reason));
   }
 
-  console.log("[SEND:supabase] upload success", { attachmentId: input.attachmentId, size: bytes.length });
+  console.log("[SEND:supabase] upload success", { attachmentId: input.attachmentId, size: bytes.length, alreadyStored: kind === "exists" });
 
   return {
-    id: input.attachmentId,
-    name: input.originalName,
-    mimeType,
-    size: bytes.length,
-    storagePath: input.storagePath,
-    downloadUrl: "",
-    uploadedAt,
+    uploaded: {
+      id: input.attachmentId,
+      name: input.originalName,
+      mimeType,
+      size: bytes.length,
+      storagePath: input.storagePath,
+      downloadUrl: "",
+      uploadedAt,
+    },
+    alreadyStored: kind === "exists",
   };
 }
 

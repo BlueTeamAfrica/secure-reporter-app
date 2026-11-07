@@ -165,6 +165,7 @@ export default function NewReportScreen() {
             sourceUri: file.uri,
             attachmentId,
             displayName: file.name,
+            mimeType: file.mimeType,
           });
           next.push({
             id: attachmentId,

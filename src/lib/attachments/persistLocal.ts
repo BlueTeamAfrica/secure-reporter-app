@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { DraftAttachment } from "./types";
-import { sanitizeFileName } from "./fileNames";
+import { attachmentFileName } from "./fileNames";
 import { getWorkingReport, hasStoredWorkingReport } from "../../state/editorDraft";
 import { countStoredActionableReports, getReports } from "../../state/drafts";
 import { isRealSession } from "../../state/session";
@@ -21,12 +21,13 @@ export async function importPickedFileToSandbox(input: {
   sourceUri: string;
   attachmentId: string;
   displayName: string;
+  mimeType: string;
 }): Promise<string> {
   const dir = attachmentsRootDir();
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
 
-  const safe = sanitizeFileName(input.displayName);
-  const dest = `${dir}${input.attachmentId}_${safe}`;
+  // No part of the original name on disk (S3); the name is kept, encrypted, in the item.
+  const dest = `${dir}${attachmentFileName(input.attachmentId, input.displayName, input.mimeType)}`;
 
   await FileSystem.copyAsync({ from: input.sourceUri, to: dest });
   return dest;
