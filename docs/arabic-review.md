@@ -52,7 +52,7 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | جارٍ التحقق… | Checking… |
 | حاول مرة أخرى. | Try again. |
 | يُرجى الانتظار قليلاً. | Please wait a moment. |
-| يُرجى الانتظار {seconds} ث | Please wait {seconds} s |
+| يُرجى الانتظار {seconds} ثانية | Please wait {seconds} s |
 | استخدم من 4 إلى 6 أرقام. | Use 4 to 6 digits. |
 | لا يستطيع هذا الإصدار فتح البيانات على هذا الهاتف. ثبّت أحدث إصدار. | This version can't open the data on this phone. Install the latest version. |
 | لا يمكن فتح البيانات على هذا الجهاز. | The data on this phone can't be opened on this device. |
@@ -122,7 +122,7 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | تعذّر التحضير للإرسال. حاول مرة أخرى. | Could not prepare to send. Try again. |
 | اكتب شيئاً قبل الإرسال. | Write something before sending. |
 | أضف اسمك أولاً | Add your name first |
-| يُرسل اسمك مع كل مادة ليعرفوا أنها منك. | Your name is sent with each entry, so they know it is from you. |
+| يُرسل اسمك مع كل مادة. | Your name is sent with each entry. |
 | إضافة الاسم | Add name |
 
 ## Settings
@@ -182,7 +182,7 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | العربية | English |
 |---|---|
 | اسمك | Your name |
-| يُرسل اسمك مع كل مادة ليعرفوا أنها منك. | Your name is sent with each entry, so they know it is from you. |
+| يُرسل اسمك مع كل مادة. | Your name is sent with each entry. |
 | الاسم | Name |
 | اسمك | Your name |
 | أدخل اسماً. | Enter a name. |
@@ -215,9 +215,9 @@ launcher name "My Notes" in both languages. Digits are Western (0-9) everywhere.
 | حذف | Delete |
 | حذف هذه الملاحظة؟ | Delete this note? |
 | مشتريات | Shopping |
-| خبز<br>طماطم<br>أرز<br>شاي<br>صابون | Bread<br>Tomatoes<br>Rice<br>Tea<br>Soap |
+| عيش<br>طماطم<br>رز<br>شاي<br>صابون | Bread<br>Tomatoes<br>Rice<br>Tea<br>Soap |
 | هذا الأسبوع | This week |
-| دفع فاتورة الكهرباء<br>الاتصال بالسبّاك بخصوص حنفية المطبخ<br>إرجاع الكراسي المستعارة | Pay the electricity bill<br>Call the plumber about the kitchen tap<br>Return the borrowed chairs |
+| شحن الكهرباء<br>الاتصال بالسبّاك بخصوص حنفية المطبخ<br>إرجاع الكراسي المستعارة | Top up the electricity<br>Call the plumber about the kitchen tap<br>Return the borrowed chairs |
 | شوربة العدس | Lentil soup |
 | كوب عدس أحمر، بصلة، فصّا ثوم، كمّون، ملح. تُطبخ 25 دقيقة ثم تُخلط. | 1 cup red lentils, 1 onion, 2 cloves of garlic, cumin, salt. Cook 25 minutes, then blend. |
 | النباتات | Plants |

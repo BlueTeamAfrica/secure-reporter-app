@@ -6,17 +6,14 @@
  */
 import * as SecureStore from "expo-secure-store";
 
-import { deleteAllImportedAttachments } from "../lib/attachments/persistLocal";
 import { getVault, getVaultScryptChoice } from "../lib/vault/expoStorage";
 import { VaultError, type VaultKind } from "../lib/vault/vault";
 import { afterFailedAttempt } from "./lockoutPolicy";
 import { guardedPinAttempt, type PinAttemptResult } from "./pinAttempts";
-import { endSession, markSessionStarted } from "./session";
+import { markSessionStarted } from "./session";
 
-const DEVICE_FAILED_ATTEMPTS_KEY = "device_failed_attempts";
-const DEVICE_LOCKOUT_UNTIL_KEY = "device_lockout_until";
+import { DEVICE_FAILED_ATTEMPTS_KEY, DEVICE_LOCKOUT_UNTIL_KEY, RANDOMIZE_KEYPAD_KEY } from "./erasePlan";
 
-const RANDOMIZE_KEYPAD_KEY = "randomize_keypad";
 
 /** Test builds show this in Diagnostics. Duration only; no PIN-dependent detail. */
 let lastUnlockDurationMs: number | null = null;
@@ -59,30 +56,6 @@ export async function unlockWithPin(pin: string): Promise<VaultKind | null> {
   if (!result) return null;
   markSessionStarted();
   return result.kind;
-}
-
-/**
- * Erases everything on this phone: both vaults (device secret first, so the blobs are useless
- * even if a delete fails), every local attachment file, the lockout counters and the keypad
- * preference. Every step runs even if an earlier one fails. The language choice is removed by
- * the caller (language.ts), which then reloads to first launch.
- */
-export async function wipeDevice(): Promise<{ complete: boolean }> {
-  endSession();
-  let complete = true;
-  const step = async (fn: () => Promise<unknown>) => {
-    try {
-      await fn();
-    } catch {
-      complete = false;
-    }
-  };
-  await step(() => getVault().wipeAll());
-  await step(() => deleteAllImportedAttachments());
-  for (const key of [DEVICE_FAILED_ATTEMPTS_KEY, DEVICE_LOCKOUT_UNTIL_KEY, RANDOMIZE_KEYPAD_KEY]) {
-    await step(() => SecureStore.deleteItemAsync(key));
-  }
-  return { complete };
 }
 
 /**

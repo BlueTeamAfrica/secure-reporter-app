@@ -14,6 +14,8 @@ import { endSession } from "../src/state/session";
 import { hasReporterProfileComplete } from "../src/state/reporterProfile";
 import { PIN_STRINGS, isPermanentUnlockError, pinErrorMessage } from "../src/state/pinMessages";
 import PinPad from "../src/components/PinPad";
+import RecoveryErase from "../src/components/RecoveryErase";
+import { offersRecoveryErase } from "../src/state/erasePlan";
 import { fmt } from "../src/i18n";
 import { colors } from "../src/theme/colors";
 import { poppins, lh } from "../src/theme/fonts";
@@ -31,6 +33,8 @@ export default function UnlockScreen() {
   const [randomizeKeypad, setRandomizeKeypad] = useState(false);
   const [working, setWorking] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  // The data can never be opened (half-erased, or the device secret is gone): offer to erase.
+  const [recoverable, setRecoverable] = useState(false);
 
   useEffect(() => {
     async function loadLockState() {
@@ -84,6 +88,7 @@ export default function UnlockScreen() {
       setPin("");
       setMessage(pinErrorMessage(e));
       if (isPermanentUnlockError(e)) setBlocked(true);
+      if (offersRecoveryErase(e)) setRecoverable(true);
       return;
     }
 
@@ -189,6 +194,8 @@ export default function UnlockScreen() {
             {working ? PIN_STRINGS.unlockWorking : PIN_STRINGS.unlockButton}
           </Text>
         </Pressable>
+
+        {recoverable ? <RecoveryErase /> : null}
       </View>
     </View>
   );

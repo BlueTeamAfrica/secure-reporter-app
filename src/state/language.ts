@@ -11,7 +11,6 @@ import {
   flushRuntimeWorkingReportSnapshotToStorage,
 } from "./editorDraft";
 import {
-  DEFAULT_RTL_FLAGS,
   LANGUAGE_KEY,
   needsReload,
   parseLanguage,
@@ -64,13 +63,6 @@ export async function chooseLanguageAtSetup(language: Language): Promise<boolean
   await new Promise((resolve) => setTimeout(resolve, NATIVE_FLAGS_SETTLE_MS));
   await Updates.reloadAsync();
   return true;
-}
-
-/** Erase everything: forget the choice and restore fresh-install RTL flags (applied on reload). */
-export async function forgetLanguage(): Promise<void> {
-  I18nManager.allowRTL(DEFAULT_RTL_FLAGS.allowRTL);
-  I18nManager.forceRTL(DEFAULT_RTL_FLAGS.forceRTL);
-  await SecureStore.deleteItemAsync(LANGUAGE_KEY);
 }
 
 /** Reloads the JS app (after erase). Same mechanism as the language switch. */

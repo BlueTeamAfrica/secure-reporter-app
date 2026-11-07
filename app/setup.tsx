@@ -8,6 +8,8 @@ import { t } from "../src/i18n";
 import { TABLES } from "../src/i18n/strings";
 import { PIN_STRINGS, pinErrorMessage } from "../src/state/pinMessages";
 import PinPad from "../src/components/PinPad";
+import RecoveryErase from "../src/components/RecoveryErase";
+import { offersRecoveryErase } from "../src/state/erasePlan";
 import { colors } from "../src/theme/colors";
 import { poppins, lh } from "../src/theme/fonts";
 
@@ -62,6 +64,8 @@ export default function SetupScreen() {
   const [coverPin, setCoverPin] = useState("");
   const [coverConfirm, setCoverConfirm] = useState("");
   const [error, setError] = useState("");
+  // Setup found a half-erased vault (ALREADY_INITIALIZED): offer to erase and start again.
+  const [recoverable, setRecoverable] = useState(false);
 
   function restartReal(message: string) {
     setError(message);
@@ -90,6 +94,7 @@ export default function SetupScreen() {
       setCoverConfirm("");
       router.replace("/reporter-profile");
     } catch (e) {
+      if (offersRecoveryErase(e)) setRecoverable(true);
       const message = pinErrorMessage(e);
       if (message === PIN_STRINGS.setupSameAsFirst) restartCover(message);
       else if (message === PIN_STRINGS.errInvalidPin) restartReal(message);
@@ -239,6 +244,7 @@ export default function SetupScreen() {
               {PIN_STRINGS.setupAckButton}
             </Text>
           </Pressable>
+          {recoverable ? <RecoveryErase /> : null}
         </>
       );
       break;

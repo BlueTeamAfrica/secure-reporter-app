@@ -41,6 +41,7 @@ export function pinErrorMessage(error: unknown): PinErrorMessage {
     case "KDF_UNAVAILABLE":
       return PIN_STRINGS.errUnavailable;
     case "NOT_INITIALIZED":
+    case "ALREADY_INITIALIZED": // setup found a half-erased vault
       return PIN_STRINGS.errNotSetUp;
     default:
       return PIN_STRINGS.errGeneric;
@@ -51,5 +52,10 @@ export function pinErrorMessage(error: unknown): PinErrorMessage {
 export function isPermanentUnlockError(error: unknown): boolean {
   const code =
     error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
-  return code === "UNSUPPORTED_FORMAT" || code === "DEVICE_SECRET_MISSING" || code === "KDF_UNAVAILABLE";
+  return (
+    code === "UNSUPPORTED_FORMAT" ||
+    code === "DEVICE_SECRET_MISSING" ||
+    code === "KDF_UNAVAILABLE" ||
+    code === "NOT_INITIALIZED"
+  );
 }

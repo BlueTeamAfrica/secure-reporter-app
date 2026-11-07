@@ -114,7 +114,7 @@ const en = {
     sendFailed: "Could not prepare to send. Try again.",
     needsText: "Write something before sending.",
     nameNeededTitle: "Add your name first",
-    nameNeededBody: "Your name is sent with each entry, so they know it is from you.",
+    nameNeededBody: "Your name is sent with each entry.",
     addName: "Add name",
   },
   settings: {
@@ -164,7 +164,7 @@ const en = {
   },
   profile: {
     title: "Your name",
-    body: "Your name is sent with each entry, so they know it is from you.",
+    body: "Your name is sent with each entry.",
     label: "Name",
     placeholder: "Your name",
     required: "Enter a name.",
@@ -197,7 +197,7 @@ const en = {
       { title: "Shopping", body: "Bread\nTomatoes\nRice\nTea\nSoap" },
       {
         title: "This week",
-        body: "Pay the electricity bill\nCall the plumber about the kitchen tap\nReturn the borrowed chairs",
+        body: "Top up the electricity\nCall the plumber about the kitchen tap\nReturn the borrowed chairs",
       },
       {
         title: "Lentil soup",
@@ -265,7 +265,7 @@ const ar: Strings = {
     unlockWorking: "جارٍ التحقق…",
     unlockTryAgain: "حاول مرة أخرى.",
     unlockWait: "يُرجى الانتظار قليلاً.",
-    unlockWaitSeconds: "يُرجى الانتظار {seconds} ث",
+    unlockWaitSeconds: "يُرجى الانتظار {seconds} ثانية",
     errInvalidPin: "استخدم من 4 إلى 6 أرقام.",
     errUnsupported: "لا يستطيع هذا الإصدار فتح البيانات على هذا الهاتف. ثبّت أحدث إصدار.",
     errDeviceKeyMissing: "لا يمكن فتح البيانات على هذا الجهاز.",
@@ -327,7 +327,7 @@ const ar: Strings = {
     sendFailed: "تعذّر التحضير للإرسال. حاول مرة أخرى.",
     needsText: "اكتب شيئاً قبل الإرسال.",
     nameNeededTitle: "أضف اسمك أولاً",
-    nameNeededBody: "يُرسل اسمك مع كل مادة ليعرفوا أنها منك.",
+    nameNeededBody: "يُرسل اسمك مع كل مادة.",
     addName: "إضافة الاسم",
   },
   settings: {
@@ -376,7 +376,7 @@ const ar: Strings = {
   },
   profile: {
     title: "اسمك",
-    body: "يُرسل اسمك مع كل مادة ليعرفوا أنها منك.",
+    body: "يُرسل اسمك مع كل مادة.",
     label: "الاسم",
     placeholder: "اسمك",
     required: "أدخل اسماً.",
@@ -405,10 +405,10 @@ const ar: Strings = {
     delete: "حذف",
     deleteTitle: "حذف هذه الملاحظة؟",
     samples: [
-      { title: "مشتريات", body: "خبز\nطماطم\nأرز\nشاي\nصابون" },
+      { title: "مشتريات", body: "عيش\nطماطم\nرز\nشاي\nصابون" },
       {
         title: "هذا الأسبوع",
-        body: "دفع فاتورة الكهرباء\nالاتصال بالسبّاك بخصوص حنفية المطبخ\nإرجاع الكراسي المستعارة",
+        body: "شحن الكهرباء\nالاتصال بالسبّاك بخصوص حنفية المطبخ\nإرجاع الكراسي المستعارة",
       },
       {
         title: "شوربة العدس",

@@ -6,14 +6,14 @@ import PinPad from "../../src/components/PinPad";
 import Screen from "../../src/components/layout/Screen";
 import { useLockoutCountdown } from "../../src/components/useLockoutCountdown";
 import { fmt, t } from "../../src/i18n";
-import { checkPinInSession, wipeDevice } from "../../src/state/device";
-import { forgetLanguage, reloadApp } from "../../src/state/language";
+import { checkPinInSession } from "../../src/state/device";
+import { eraseEverythingAndRestart } from "../../src/state/erase";
 import { PIN_STRINGS, pinErrorMessage } from "../../src/state/pinMessages";
 import { colors } from "../../src/theme/colors";
 import { font, lh } from "../../src/theme/fonts";
 
 /**
- * Erase everything: clear warning, then the real code. The second code (or any other code)
+ * Erase everything (src/state/erase.ts): clear warning, then the real code. The second code (or any other code)
  * erases nothing and counts as a wrong try. Removes both vaults, the queue, all local files,
  * the counters, keypad and language settings, then reloads to first launch.
  */
@@ -46,13 +46,7 @@ export default function EraseScreen() {
     if (!ok) return;
 
     setErasing(true);
-    await wipeDevice();
-    await forgetLanguage().catch(() => {});
-    try {
-      await reloadApp();
-    } catch {
-      router.replace("/");
-    }
+    if (!(await eraseEverythingAndRestart())) router.replace("/");
   }
 
   const lockedMessage = lockedSeconds > 0 ? fmt(PIN_STRINGS.unlockWaitSeconds, { seconds: lockedSeconds }) : "";

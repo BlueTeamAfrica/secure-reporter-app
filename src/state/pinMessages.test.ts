@@ -13,6 +13,7 @@ describe("PIN error messages", () => {
       ["DEVICE_SECRET_MISSING", PIN_STRINGS.errDeviceKeyMissing],
       ["KDF_UNAVAILABLE", PIN_STRINGS.errUnavailable],
       ["NOT_INITIALIZED", PIN_STRINGS.errNotSetUp],
+      ["ALREADY_INITIALIZED", PIN_STRINGS.errNotSetUp],
       ["CORRUPT", PIN_STRINGS.errGeneric],
     ];
     for (const [code, message] of cases) {
@@ -30,6 +31,7 @@ describe("PIN error messages", () => {
     assert.equal(isPermanentUnlockError(new VaultError("KDF_UNAVAILABLE", "")), true);
     assert.equal(isPermanentUnlockError(new VaultError("UNSUPPORTED_FORMAT", "")), true);
     assert.equal(isPermanentUnlockError(new VaultError("DEVICE_SECRET_MISSING", "")), true);
+    assert.equal(isPermanentUnlockError(new VaultError("NOT_INITIALIZED", "")), true);
     assert.equal(isPermanentUnlockError(new VaultError("INVALID_PIN", "")), false);
     assert.equal(isPermanentUnlockError(new Error("x")), false);
   });
