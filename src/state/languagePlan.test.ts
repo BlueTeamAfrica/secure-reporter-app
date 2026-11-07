@@ -4,7 +4,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  DEFAULT_RTL_FLAGS,
   LANGUAGE_KEY,
+  needsReload,
   otherLanguage,
   parseLanguage,
   rtlFlagsFor,
@@ -35,6 +37,17 @@ describe("language plan", () => {
   it("switches between the two languages", () => {
     assert.equal(otherLanguage("ar"), "en");
     assert.equal(otherLanguage("en"), "ar");
+  });
+
+  it("reloads only when the layout direction must change", () => {
+    assert.equal(needsReload("ar", false), true);
+    assert.equal(needsReload("en", true), true, "English on an Arabic-language phone");
+    assert.equal(needsReload("ar", true), false);
+    assert.equal(needsReload("en", false), false);
+  });
+
+  it("erase restores React Native's fresh-install flags", () => {
+    assert.deepEqual(DEFAULT_RTL_FLAGS, { allowRTL: true, forceRTL: false });
   });
 
   it("is not a key the legacy wipe deletes or treats as a marker", () => {

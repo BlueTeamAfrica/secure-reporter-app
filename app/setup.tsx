@@ -1,18 +1,23 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { router } from "expo-router";
 import { createDevicePins } from "../src/state/device";
+import { chooseLanguageAtSetup, getStoredLanguage } from "../src/state/language";
+import type { Language } from "../src/state/languagePlan";
+import { t } from "../src/i18n";
+import { TABLES } from "../src/i18n/strings";
 import { PIN_STRINGS, pinErrorMessage } from "../src/state/pinMessages";
 import PinPad from "../src/components/PinPad";
 import { colors } from "../src/theme/colors";
 import { poppins, lh } from "../src/theme/fonts";
 
 /**
- * First-run setup: real code (twice) → second code (twice, must differ) → acknowledgment →
- * create both vaults (leaves a real session open) → existing profile step.
+ * First-run setup: language (first screen; reloads if the layout direction changes) → real code
+ * (twice) → second code (twice, must differ) → acknowledgment → create both vaults (leaves a real
+ * session open) → name → first-run guide.
  * Codes live only in this component's state until createDevicePins; nothing is logged.
  */
-type Step = "realCreate" | "realConfirm" | "coverCreate" | "coverConfirm" | "ack" | "working";
+type Step = "loading" | "language" | "realCreate" | "realConfirm" | "coverCreate" | "coverConfirm" | "ack" | "working";
 
 function Header({ title, body }: { title: string; body: string }) {
   return (
@@ -28,7 +33,30 @@ function Header({ title, body }: { title: string; body: string }) {
 }
 
 export default function SetupScreen() {
-  const [step, setStep] = useState<Step>("realCreate");
+  const [step, setStep] = useState<Step>("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    getStoredLanguage()
+      .catch(() => null)
+      .then((language) => {
+        if (!cancelled) setStep(language ? "realCreate" : "language");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function pickLanguage(language: Language) {
+    setStep("loading");
+    try {
+      const reloading = await chooseLanguageAtSetup(language);
+      if (reloading) return;
+    } catch {
+      // Reload unavailable (development build): continue in the current layout.
+    }
+    setStep("realCreate");
+  }
   const [realPin, setRealPin] = useState("");
   const [realConfirm, setRealConfirm] = useState("");
   const [coverPin, setCoverPin] = useState("");
@@ -75,6 +103,51 @@ export default function SetupScreen() {
 
   let content: React.ReactNode;
   switch (step) {
+    case "loading":
+      content = (
+        <View style={{ alignItems: "center", paddingVertical: 40 }}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      );
+      break;
+    case "language":
+      content = (
+        <>
+          {/* Both scripts: the reader may not read the current layout's language. */}
+          <Text style={{ color: colors.text, fontSize: 26, textAlign: "center", marginBottom: 4, fontFamily: "Cairo_700Bold" }}>
+            {TABLES.ar.language.choose}
+          </Text>
+          <Text style={{ color: colors.textMuted, fontSize: 18, textAlign: "center", marginBottom: 32, ...poppins("500") }}>
+            {TABLES.en.language.choose}
+          </Text>
+          {(["ar", "en"] as const).map((language) => (
+            <Pressable
+              key={language}
+              onPress={() => void pickLanguage(language)}
+              style={({ pressed }) => ({
+                backgroundColor: pressed ? colors.accentSoft : colors.surface,
+                borderWidth: 2,
+                borderColor: colors.accent,
+                borderRadius: 18,
+                paddingVertical: 26,
+                marginBottom: 16,
+              })}
+            >
+              <Text
+                style={{
+                  color: colors.text,
+                  fontSize: 30,
+                  textAlign: "center",
+                  fontFamily: language === "ar" ? "Cairo_700Bold" : "Poppins_600SemiBold",
+                }}
+              >
+                {language === "ar" ? t().language.arabic : t().language.english}
+              </Text>
+            </Pressable>
+          ))}
+        </>
+      );
+      break;
     case "realCreate":
       content = (
         <>

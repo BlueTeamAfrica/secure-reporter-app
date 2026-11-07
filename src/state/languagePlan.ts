@@ -24,3 +24,11 @@ export function rtlFlagsFor(language: Language): { allowRTL: boolean; forceRTL: 
 export function otherLanguage(language: Language): Language {
   return language === "ar" ? "en" : "ar";
 }
+
+/** A reload is needed only when the layout direction must change. */
+export function needsReload(language: Language, isRTLNow: boolean): boolean {
+  return (language === "ar") !== isRTLNow;
+}
+
+/** Fresh-install values of React Native's RTL flags, restored by "Erase everything". */
+export const DEFAULT_RTL_FLAGS = { allowRTL: true, forceRTL: false } as const;

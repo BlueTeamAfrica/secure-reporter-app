@@ -1,5 +1,6 @@
 /**
- * Language switch for the RTL reload test. Stored outside the vault; holds only the language code.
+ * Language choice. Stored outside the vault (the PIN screen needs it before unlock); holds only
+ * the language code. A change of layout direction needs a reload (forceRTL + reloadAsync).
  */
 import { I18nManager } from "react-native";
 import * as SecureStore from "expo-secure-store";
@@ -9,7 +10,14 @@ import {
   clearRuntimeWorkingReportSnapshot,
   flushRuntimeWorkingReportSnapshotToStorage,
 } from "./editorDraft";
-import { LANGUAGE_KEY, parseLanguage, rtlFlagsFor, type Language } from "./languagePlan";
+import {
+  DEFAULT_RTL_FLAGS,
+  LANGUAGE_KEY,
+  needsReload,
+  parseLanguage,
+  rtlFlagsFor,
+  type Language,
+} from "./languagePlan";
 import { endSession } from "./session";
 
 /**
@@ -39,6 +47,34 @@ export async function switchLanguageAndReload(next: Language): Promise<void> {
   I18nManager.forceRTL(flags.forceRTL);
 
   endSession();
+  await new Promise((resolve) => setTimeout(resolve, NATIVE_FLAGS_SETTLE_MS));
+  await Updates.reloadAsync();
+}
+
+/**
+ * First launch: stores the choice and applies the RTL flags. Reloads only if the layout
+ * direction must change; returns false when setup can simply continue. No session exists yet.
+ */
+export async function chooseLanguageAtSetup(language: Language): Promise<boolean> {
+  await SecureStore.setItemAsync(LANGUAGE_KEY, language);
+  const flags = rtlFlagsFor(language);
+  I18nManager.allowRTL(flags.allowRTL);
+  I18nManager.forceRTL(flags.forceRTL);
+  if (!needsReload(language, I18nManager.isRTL)) return false;
+  await new Promise((resolve) => setTimeout(resolve, NATIVE_FLAGS_SETTLE_MS));
+  await Updates.reloadAsync();
+  return true;
+}
+
+/** Erase everything: forget the choice and restore fresh-install RTL flags (applied on reload). */
+export async function forgetLanguage(): Promise<void> {
+  I18nManager.allowRTL(DEFAULT_RTL_FLAGS.allowRTL);
+  I18nManager.forceRTL(DEFAULT_RTL_FLAGS.forceRTL);
+  await SecureStore.deleteItemAsync(LANGUAGE_KEY);
+}
+
+/** Reloads the JS app (after erase). Same mechanism as the language switch. */
+export async function reloadApp(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, NATIVE_FLAGS_SETTLE_MS));
   await Updates.reloadAsync();
 }

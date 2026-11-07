@@ -1,23 +1,51 @@
-import { I18nManager, Text, Pressable, ScrollView, Switch, View } from "react-native";
-import { router } from "expo-router";
+import { Alert, Text, Pressable, ScrollView, Switch, View } from "react-native";
+import { router, type Href } from "expo-router";
 import Constants from "expo-constants";
 import { useEffect, useState } from "react";
 import Screen from "../../src/components/layout/Screen";
 import { IS_TEST_BUILD } from "../../src/lib/env/testBuild";
+import { fmt, LANGUAGE, t } from "../../src/i18n";
 import { getRandomizeKeypadEnabled, setRandomizeKeypad } from "../../src/state/device";
-import { getStoredLanguage, switchLanguageAndReload } from "../../src/state/language";
-import { otherLanguage, type Language } from "../../src/state/languagePlan";
+import { switchLanguageAndReload } from "../../src/state/language";
+import { otherLanguage } from "../../src/state/languagePlan";
 import { isSessionUnlocked } from "../../src/state/session";
 import { colors } from "../../src/theme/colors";
-import { poppins } from "../../src/theme/fonts";
+import { font, lh } from "../../src/theme/fonts";
 
-const LANGUAGE_NAMES: Record<Language, string> = { en: "English", ar: "Arabic" };
+const rowStyle = {
+  backgroundColor: colors.surface,
+  padding: 18,
+  borderRadius: 14,
+  marginBottom: 12,
+  borderWidth: 1,
+  borderColor: colors.border,
+} as const;
+
+function Row({
+  title,
+  hint,
+  onPress,
+  danger,
+}: {
+  title: string;
+  hint: string;
+  onPress: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <Pressable onPress={onPress} style={rowStyle}>
+      <Text style={{ color: danger ? colors.error : colors.text, fontSize: 17, marginBottom: 4, ...font("600") }}>
+        {title}
+      </Text>
+      <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: lh(20), ...font("400") }}>{hint}</Text>
+    </Pressable>
+  );
+}
 
 export default function SettingsScreen() {
+  const s = t().settings;
   const [randomizeKeypad, setRandomizeKeypadState] = useState(false);
-  const [storedLanguage, setStoredLanguage] = useState<Language | null>(null);
-  const [languageBusy, setLanguageBusy] = useState(false);
-  const [languageFailed, setLanguageFailed] = useState(false);
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,50 +54,52 @@ export default function SettingsScreen() {
         if (!cancelled) setRandomizeKeypadState(v);
       })
       .catch(() => {});
-    if (IS_TEST_BUILD) {
-      getStoredLanguage()
-        .then((v) => {
-          if (!cancelled) setStoredLanguage(v);
-        })
-        .catch(() => {});
-    }
     return () => {
       cancelled = true;
     };
   }, []);
-
-  const nextLanguage = otherLanguage(storedLanguage ?? (I18nManager.isRTL ? "ar" : "en"));
-
-  async function onSwitchLanguage() {
-    if (languageBusy) return;
-    setLanguageBusy(true);
-    setLanguageFailed(false);
-    try {
-      await switchLanguageAndReload(nextLanguage);
-    } catch {
-      // The data key may already be gone, and then the only safe screen is the PIN screen.
-      if (!isSessionUnlocked()) {
-        router.replace("/unlock");
-        return;
-      }
-      setLanguageBusy(false);
-      setLanguageFailed(true);
-    }
-  }
 
   const version =
     (Constants.expoConfig && Constants.expoConfig.version) ||
     (((Constants as any).manifest?.version as string | undefined) ?? "") ||
     "1.0.0";
 
+  const next = otherLanguage(LANGUAGE);
+  const nextName = next === "ar" ? t().language.arabic : t().language.english;
+
+  async function switchLanguage() {
+    if (switching) return;
+    setSwitching(true);
+    try {
+      // Saves the working draft (same path as lock), closes the session, reloads to the PIN screen.
+      await switchLanguageAndReload(next);
+    } catch {
+      setSwitching(false);
+      if (!isSessionUnlocked()) {
+        router.replace("/unlock");
+        return;
+      }
+      Alert.alert(s.languageSwitchFailed);
+    }
+  }
+
+  function confirmLanguage() {
+    Alert.alert(s.languageSwitchTitle, s.languageSwitchBody, [
+      { text: t().common.cancel, style: "cancel" },
+      { text: `${s.languageSwitchConfirm}: ${nextName}`, onPress: () => void switchLanguage() },
+    ]);
+  }
+
+  const go = (href: Href) => () => router.push(href);
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
         <Pressable
           onPress={() => router.back()}
-          style={{ alignSelf: "flex-start", marginBottom: 16, paddingVertical: 6, paddingRight: 12 }}
+          style={{ alignSelf: "flex-start", marginBottom: 16, paddingVertical: 6, paddingEnd: 12 }}
         >
-          <Text style={{ color: colors.accent, fontSize: 16, ...poppins("600") }}>← Back</Text>
+          <Text style={{ color: colors.accent, fontSize: 16, ...font("600") }}>{t().common.back}</Text>
         </Pressable>
         {/* Test builds only: 3 s hold on the title opens the Storage check (also reachable
             from the visible "Diagnostics" row). No hidden gestures in production builds. */}
@@ -79,54 +109,19 @@ export default function SettingsScreen() {
           android_disableSound
           style={{ alignSelf: "flex-start" }}
         >
-          <Text style={{ color: colors.text, fontSize: 28, marginBottom: 8, ...poppins("700") }}>
-            Settings
-          </Text>
+          <Text style={{ color: colors.text, fontSize: 28, marginBottom: 20, ...font("700") }}>{s.title}</Text>
         </Pressable>
-        <Text
-          style={{
-            color: colors.textMuted,
-            fontSize: 15,
-            lineHeight: 22,
-            marginBottom: 28,
-            ...poppins("400"),
-          }}
-        >
-          Manage your workspace profile.
-        </Text>
 
-        <Pressable
-          onPress={() =>
-            router.push({
-              pathname: "/reporter-profile",
-              params: { returnTo: "settings" },
-            })
-          }
-          style={{
-            backgroundColor: colors.surface,
-            padding: 18,
-            borderRadius: 14,
-            marginBottom: 12,
-            borderWidth: 1,
-            borderColor: colors.border,
-          }}
-        >
-          <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
-            Workspace profile
-          </Text>
-          <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
-            Review or edit your name, region, and phone.
-          </Text>
-        </Pressable>
+        <Row title={s.language} hint={`${s.languageCurrent} · ${nextName}`} onPress={confirmLanguage} />
+        <Row
+          title={s.name}
+          hint={s.nameHint}
+          onPress={go({ pathname: "/reporter-profile", params: { returnTo: "settings" } })}
+        />
 
         <View
           style={{
-            backgroundColor: colors.surface,
-            padding: 18,
-            borderRadius: 14,
-            marginBottom: 12,
-            borderWidth: 1,
-            borderColor: colors.border,
+            ...rowStyle,
             flexDirection: "row",
             alignItems: "center",
             justifyContent: "space-between",
@@ -134,11 +129,9 @@ export default function SettingsScreen() {
           }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
-              Randomize keypad
-            </Text>
-            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
-              Shuffle key positions on the code screen.
+            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...font("600") }}>{s.keypad}</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: lh(20), ...font("400") }}>
+              {s.keypadHint}
             </Text>
           </View>
           <Switch
@@ -151,55 +144,12 @@ export default function SettingsScreen() {
         </View>
 
         {IS_TEST_BUILD ? (
-          <Pressable
-            onPress={() => router.push("/settings/storage-check")}
-            style={{
-              backgroundColor: colors.surface,
-              padding: 18,
-              borderRadius: 14,
-              marginBottom: 12,
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
-              Diagnostics
-            </Text>
-            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
-              Storage counts and speed test. Test builds only.
-            </Text>
-          </Pressable>
-        ) : null}
-
-        {IS_TEST_BUILD ? (
-          <Pressable
-            onPress={() => void onSwitchLanguage()}
-            disabled={languageBusy}
-            style={{
-              backgroundColor: colors.surface,
-              padding: 18,
-              borderRadius: 14,
-              marginBottom: 12,
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <Text style={{ color: colors.text, fontSize: 17, marginBottom: 4, ...poppins("600") }}>
-              Switch to {LANGUAGE_NAMES[nextLanguage]}
-            </Text>
-            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, ...poppins("400") }}>
-              {languageFailed
-                ? "Could not switch. Try again."
-                : `Saved: ${storedLanguage ? LANGUAGE_NAMES[storedLanguage] : "not set"}. Layout: ${
-                    I18nManager.isRTL ? "RTL" : "LTR"
-                  }. The app reloads. Test builds only.`}
-            </Text>
-          </Pressable>
+          <Row title={s.diagnostics} hint={s.diagnosticsHint} onPress={go("/settings/storage-check")} />
         ) : null}
 
         <View style={{ marginTop: 18, paddingVertical: 10 }}>
-          <Text style={{ color: colors.textMuted, fontSize: 12, ...poppins("400") }}>
-            Version {version}
+          <Text style={{ color: colors.textMuted, fontSize: 12, ...font("400") }}>
+            {fmt(s.version, { version })}
           </Text>
         </View>
       </ScrollView>
