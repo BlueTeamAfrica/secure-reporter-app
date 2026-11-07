@@ -4,6 +4,7 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import Screen from "../src/components/layout/Screen";
 import { t } from "../src/i18n";
 import { getReporterProfile, saveReporterProfile } from "../src/state/reporterProfile";
+import { PRIVATE_TEXT_INPUT } from "../src/ui/privateTextInput";
 import { colors } from "../src/theme/colors";
 import { font, lh } from "../src/theme/fonts";
 
@@ -28,6 +29,8 @@ const inputStyle = {
 export default function ReporterProfileScreen() {
   const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
   const fromSettings = returnTo === "settings";
+  // Opened from the editor's "Add name": go back to the editor after saving (S12).
+  const returnsBack = fromSettings || returnTo === "editor";
   const p = t().profile;
 
   const [name, setName] = useState("");
@@ -56,7 +59,7 @@ export default function ReporterProfileScreen() {
     setSaving(true);
     try {
       await saveReporterProfile({ reporterName: trimmed, reporterRegion: "", reporterPhone: "", reporterAlias: "" });
-      if (fromSettings) router.back();
+      if (returnsBack) router.back();
       else router.replace("/guide"); // first run: the guide comes once, after the name
     } catch {
       setError(t().common.genericError);
@@ -75,6 +78,7 @@ export default function ReporterProfileScreen() {
 
         <Text style={{ color: colors.text, marginBottom: 8, ...font("600") }}>{p.label}</Text>
         <TextInput
+          {...PRIVATE_TEXT_INPUT}
           value={name}
           onChangeText={(v) => {
             setName(v);
@@ -103,7 +107,7 @@ export default function ReporterProfileScreen() {
           </Text>
         </Pressable>
 
-        {fromSettings ? (
+        {returnsBack ? (
           <Pressable onPress={() => router.back()} style={{ paddingVertical: 12 }}>
             <Text style={{ color: colors.textMuted, textAlign: "center", ...font("500") }}>{t().common.cancel}</Text>
           </Pressable>

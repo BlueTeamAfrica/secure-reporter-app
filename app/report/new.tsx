@@ -14,6 +14,7 @@ import { ReportStatus, getReportById, saveReport, updateReport, updateReportStat
 import { hasReporterProfileComplete } from "../../src/state/reporterProfile";
 import { isEmptyWorkingDraft } from "../../src/state/workingDraftPlan";
 import { canSend } from "../../src/state/itemRules";
+import { PRIVATE_TEXT_INPUT } from "../../src/ui/privateTextInput";
 import { fmt, t } from "../../src/i18n";
 import { pickAttachments } from "../../src/lib/attachments/picker";
 import {
@@ -263,6 +264,7 @@ export default function NewReportScreen() {
       </Text>
 
       <TextInput
+        {...PRIVATE_TEXT_INPUT}
         value={title}
         onChangeText={(t) => {
           const now = Date.now();
@@ -281,6 +283,7 @@ export default function NewReportScreen() {
       />
 
       <TextInput
+        {...PRIVATE_TEXT_INPUT}
         value={body}
         onChangeText={(t) => {
           const now = Date.now();
@@ -454,7 +457,10 @@ export default function NewReportScreen() {
           if (!(await hasReporterProfileComplete())) {
             Alert.alert(e.nameNeededTitle, e.nameNeededBody, [
               { text: t().common.cancel, style: "cancel" },
-              { text: e.addName, onPress: () => router.push("/reporter-profile") },
+              {
+                text: e.addName,
+                onPress: () => router.push({ pathname: "/reporter-profile", params: { returnTo: "editor" } }),
+              },
             ]);
             return;
           }

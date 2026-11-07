@@ -12,6 +12,8 @@ import {
   type CoverNote,
 } from "../src/state/coverNotes";
 import { notifyUserInteraction } from "../src/state/session";
+import { PRIVATE_TEXT_INPUT } from "../src/ui/privateTextInput";
+import { coverBackAction } from "../src/ui/coverBack";
 import { colors } from "../src/theme/colors";
 import { font, lh } from "../src/theme/fonts";
 
@@ -93,14 +95,17 @@ export default function CoverScreen() {
     void persist(d);
   }, [persist]);
 
+  // M2: Back never leaves the notes app for another screen. In a note it returns to the list;
+  // on the list it leaves the app, like any notes app (the lock then asks for a code). Without
+  // this, Back would pop to whatever real screen lies under /cover in the stack.
   useEffect(() => {
-    if (!draft) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      closeEditor();
+      if (coverBackAction(!!draftRef.current) === "closeNote") closeEditor();
+      else BackHandler.exitApp();
       return true;
     });
     return () => sub.remove();
-  }, [draft, closeEditor]);
+  }, [closeEditor]);
 
   useEffect(
     () => () => {
@@ -166,6 +171,7 @@ export default function CoverScreen() {
           ) : null}
         </View>
         <TextInput
+          {...PRIVATE_TEXT_INPUT}
           value={draft.title}
           onChangeText={(title) => edit({ title })}
           placeholder={c.titlePlaceholder}
@@ -173,6 +179,7 @@ export default function CoverScreen() {
           style={{ ...field, fontSize: 18, marginBottom: 12, ...font("600") }}
         />
         <TextInput
+          {...PRIVATE_TEXT_INPUT}
           value={draft.body}
           onChangeText={(body) => edit({ body })}
           placeholder={c.bodyPlaceholder}
