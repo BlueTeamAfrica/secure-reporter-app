@@ -39,9 +39,9 @@ const GUARD_COLLECTION = "notificationEventGuards";
 /** Owner + admin: the roles the desk's RBAC lets target the "designed" stage. */
 const ELIGIBLE_ROLES = new Set(["owner", "admin"]);
 
-const TEXT_AR = "عنصر جديد بانتظاركم على المكتب.";
+const TEXT_AR = "وصلت مادة جديدة إلى المكتب.";
 const TEXT_EN = "A new item is waiting on the desk.";
-const SUBJECT = "عنصر جديد على المكتب · New item on the desk";
+const SUBJECT = "مادة جديدة على المكتب · New item on the desk";
 const FOOTER = "Secure Desk";
 
 function isTrueish(v: unknown): boolean {
