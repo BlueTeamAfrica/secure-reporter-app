@@ -385,3 +385,6 @@ export const attachmentRollback = onRequest({ cors: true, timeoutSeconds: 60 }, 
     res.status(500).json({ error: err instanceof Error ? err.message : String(err), stage });
   }
 });
+
+// New-submission alert (bell + email to desk owners/admins). See newSubmissionAlert.ts.
+export { notifyNewSubmission } from "./newSubmissionAlert";
